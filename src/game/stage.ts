@@ -59,6 +59,8 @@ const VIRUS_NAMES = [
 /** Per-chapter HP growth; hard mode multiplies on top. */
 export const HP_GROWTH = 1.6;
 export const HARD_HP = 4;
+/** Per-chapter coin growth; slightly behind HP growth so later chapters take a few more runs. */
+export const COIN_GROWTH = 1.35;
 
 export function stageDef(chapter: number, difficulty: Difficulty): StageDef {
   const c = Math.max(1, Math.floor(chapter));
@@ -75,7 +77,7 @@ export function stageDef(chapter: number, difficulty: Difficulty): StageDef {
     segments: Math.min(100 + (c - 1) * 3, 160),
     crossTime: 104,
     hpScale: Math.pow(HP_GROWTH, c - 1) * (hard ? HARD_HP : 1),
-    coinMult: (1 + 0.3 * (c - 1)) * (hard ? 2.5 : 1),
+    coinMult: Math.pow(COIN_GROWTH, c - 1) * (hard ? 2.5 : 1),
   };
 }
 

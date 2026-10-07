@@ -19,7 +19,7 @@ export const HERO_STAT_DEFS: readonly HeroStatDef[] = [
     name: 'Attack',
     maxLevel: 200,
     value: (l) => 10 * Math.pow(1.07, l),
-    cost: (l) => Math.round(30 * Math.pow(1.08, l)),
+    cost: (l) => Math.round(60 * Math.pow(1.08, l)),
     show: (v) => (v < 100 ? v.toFixed(1) : Math.round(v).toLocaleString()),
   },
   {
@@ -27,7 +27,7 @@ export const HERO_STAT_DEFS: readonly HeroStatDef[] = [
     name: 'Crit rate',
     maxLevel: 60,
     value: (l) => 0.05 + 0.005 * l,
-    cost: (l) => Math.round(40 * Math.pow(1.1, l)),
+    cost: (l) => Math.round(80 * Math.pow(1.1, l)),
     show: (v) => `${(v * 100).toFixed(1)}%`,
   },
   {
@@ -35,7 +35,7 @@ export const HERO_STAT_DEFS: readonly HeroStatDef[] = [
     name: 'Crit damage',
     maxLevel: 50,
     value: (l) => 1.5 + 0.04 * l,
-    cost: (l) => Math.round(40 * Math.pow(1.09, l)),
+    cost: (l) => Math.round(80 * Math.pow(1.09, l)),
     show: (v) => `${Math.round(v * 100)}%`,
   },
   {
@@ -43,7 +43,7 @@ export const HERO_STAT_DEFS: readonly HeroStatDef[] = [
     name: 'Cooldown',
     maxLevel: 50,
     value: (l) => 0.006 * l,
-    cost: (l) => Math.round(50 * Math.pow(1.12, l)),
+    cost: (l) => Math.round(100 * Math.pow(1.12, l)),
     show: (v) => `-${(v * 100).toFixed(1)}%`,
   },
 ];
@@ -56,7 +56,7 @@ export function heroStats(save: SaveData): HeroStats {
 }
 
 export function weaponUpgradeCost(level: number): { shards: number; coins: number } {
-  return { shards: 2 + 2 * level, coins: Math.round(40 * Math.pow(1.3, level - 1)) };
+  return { shards: 2 + 2 * level, coins: Math.round(60 * Math.pow(1.3, level - 1)) };
 }
 
 /** What a weapon level unlocks in the chest card pool. */

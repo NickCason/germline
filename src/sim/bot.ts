@@ -37,7 +37,19 @@ export function simulate(
   levels: Partial<Record<WeaponId, number>>,
   seed: number,
 ): SimResult {
-  const world = new World({ stage, hero, loadout, levels, seed, fx: false });
+  const world = playOut(new World({ stage, hero, loadout, levels, seed, fx: false }));
+  return {
+    won: world.state === 'won',
+    progress: world.progress,
+    time: world.time,
+    picks: world.picksTaken,
+    coins: world.coins,
+    weapons: world.weapons.map((w) => w.def.id),
+  };
+}
+
+/** Play a world to the end with the bot's card choices. */
+export function playOut(world: World): World {
   const limit = 20 * 60;
   while (world.time < limit) {
     if (world.state === 'picking' && world.offer) {
@@ -55,12 +67,5 @@ export function simulate(
     if (world.state === 'won' || world.state === 'lost') break;
     world.step(SIM_DT);
   }
-  return {
-    won: world.state === 'won',
-    progress: world.progress,
-    time: world.time,
-    picks: world.picksTaken,
-    coins: world.coins,
-    weapons: world.weapons.map((w) => w.def.id),
-  };
+  return world;
 }
