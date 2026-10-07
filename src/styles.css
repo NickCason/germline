@@ -1171,3 +1171,15 @@ textarea.code {
   text-align: center;
   margin-top: 10px;
 }
+
+.perf {
+  position: absolute;
+  left: 8px;
+  bottom: calc(var(--safe-bottom) + 58px);
+  font-size: 11px;
+  background: rgba(0, 0, 0, 0.6);
+  color: var(--lime);
+  padding: 2px 6px;
+  border-radius: 6px;
+  pointer-events: none;
+}

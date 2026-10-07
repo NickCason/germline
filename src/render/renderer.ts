@@ -1,5 +1,5 @@
 import { fmt } from '../core/format';
-import { FIELD_H, FIELD_W, SEG_RADIUS } from '../game/constants';
+import { FIELD_H, FIELD_W, SEG_LEN, SEG_RADIUS } from '../game/constants';
 import type { Segment } from '../game/chain';
 import type { ThemeId } from '../game/stage';
 import { PALETTES } from '../game/themes';
@@ -24,6 +24,8 @@ export interface Viewport {
  */
 export class Renderer {
   readonly canvas: HTMLCanvasElement;
+  /** Static layer under the game canvas: tissue, track groove, defence line. */
+  private readonly under: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D;
   private dpr = 1;
   private vw = 0;
@@ -33,14 +35,14 @@ export class Renderer {
   oy = 0;
   private sprites: ThemeSprites | null = null;
   private spritesKey = '';
-  private backdrop: HTMLCanvasElement | null = null;
   private backdropFor: World | null = null;
   private numbers = true;
   private readonly tmp = { x: 0, y: 0, a: 0 };
 
-  constructor(canvas: HTMLCanvasElement) {
+  constructor(canvas: HTMLCanvasElement, under: HTMLCanvasElement) {
     this.canvas = canvas;
-    this.ctx = canvas.getContext('2d', { alpha: false })!;
+    this.under = under;
+    this.ctx = canvas.getContext('2d')!;
   }
 
   setShowNumbers(on: boolean): void {
@@ -48,13 +50,16 @@ export class Renderer {
   }
 
   resize(view: Viewport): void {
-    this.dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+    // 2x is plenty for chunky cartoon art and saves a lot of fill on 3x phones.
+    this.dpr = Math.min(window.devicePixelRatio || 1, 2);
     this.vw = window.innerWidth;
     this.vh = window.innerHeight;
-    this.canvas.width = Math.round(this.vw * this.dpr);
-    this.canvas.height = Math.round(this.vh * this.dpr);
-    this.canvas.style.width = `${this.vw}px`;
-    this.canvas.style.height = `${this.vh}px`;
+    for (const c of [this.canvas, this.under]) {
+      c.width = Math.round(this.vw * this.dpr);
+      c.height = Math.round(this.vh * this.dpr);
+      c.style.width = `${this.vw}px`;
+      c.style.height = `${this.vh}px`;
+    }
     const avail = Math.max(200, this.vh - view.top - view.bottom);
     this.scale = Math.min(this.vw / FIELD_W, avail / FIELD_H);
     this.ox = (this.vw - FIELD_W * this.scale) / 2;
@@ -75,7 +80,7 @@ export class Renderer {
     if (this.backdropFor !== world) this.buildBackdrop(world);
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.drawImage(this.backdrop!, 0, 0);
+    ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
 
     const shake = world.fx.shake;
     const sx = shake ? (Math.random() - 0.5) * shake : 0;
@@ -103,10 +108,9 @@ export class Renderer {
 
   /** Tissue floor, track groove and defence line, cached per run + size. */
   private buildBackdrop(world: World): void {
-    const c = (this.backdrop ??= document.createElement('canvas'));
-    c.width = this.canvas.width;
-    c.height = this.canvas.height;
+    const c = this.under;
     const g = c.getContext('2d')!;
+    g.setTransform(1, 0, 0, 1, 0, 0);
     const p = PALETTES[world.stage.theme];
     g.fillStyle = p.floor;
     g.fillRect(0, 0, c.width, c.height);
@@ -215,15 +219,7 @@ export class Renderer {
     const path = chain.path;
     const segs = chain.segs;
     const tmp = this.tmp;
-    // Silhouette pass: one ink outline around the whole train.
-    for (let i = segs.length - 1; i >= 0; i--) {
-      const seg = segs[i];
-      if (!seg.visible) continue;
-      for (let r = 0; r < RING_OFFSETS.length; r++) {
-        path.pos(seg.s + RING_OFFSETS[r], tmp);
-        drawSprite(ctx, sp.outline, tmp.x, tmp.y + 2);
-      }
-    }
+    this.drawSilhouette(world);
     // Tail first so the front of the train draws on top.
     for (let i = segs.length - 1; i >= 0; i--) {
       const seg = segs[i];
@@ -258,6 +254,60 @@ export class Renderer {
       ctx.fillText(label, seg.x, seg.y + (seg.kind === 'normal' ? 1 : 9));
     }
     this.drawHead(world);
+  }
+
+  /**
+   * One ink outline (plus a drop shadow) around the whole train, stroked as
+   * a fat path along the track rather than hundreds of sprites.
+   */
+  private drawSilhouette(world: World): void {
+    const ctx = this.ctx;
+    const segs = world.chain.segs;
+    const path = world.chain.path;
+    const tmp = this.tmp;
+    const groups: number[] = [];
+    let start = NaN;
+    let end = NaN;
+    for (let i = segs.length - 1; i >= 0; i--) {
+      const seg = segs[i];
+      if (seg.s < -SEG_LEN) continue;
+      const a = seg.s + RING_OFFSETS[0];
+      const b = seg.s + RING_OFFSETS[RING_OFFSETS.length - 1];
+      if (Number.isNaN(start)) {
+        start = a;
+        end = b;
+      } else if (a - end > 18) {
+        groups.push(start, end);
+        start = a;
+        end = b;
+      } else end = b;
+    }
+    if (!Number.isNaN(start)) groups.push(start, end);
+    if (!groups.length) return;
+    const stroke = (dy: number) => {
+      ctx.beginPath();
+      for (let g = 0; g < groups.length; g += 2) {
+        const a = groups[g];
+        const b = groups[g + 1];
+        path.pos(a, tmp);
+        ctx.moveTo(tmp.x, tmp.y + dy);
+        for (let s = a + 8; s < b; s += 8) {
+          path.pos(s, tmp);
+          ctx.lineTo(tmp.x, tmp.y + dy);
+        }
+        path.pos(b, tmp);
+        ctx.lineTo(tmp.x, tmp.y + dy);
+      }
+      ctx.stroke();
+    };
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = 'rgba(0,0,0,0.22)';
+    ctx.lineWidth = SEG_RADIUS * 2 + 4;
+    stroke(8);
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = SEG_RADIUS * 2 + 5.2;
+    stroke(2);
   }
 
   private drawChest(seg: Segment, time: number): void {

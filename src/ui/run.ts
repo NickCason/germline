@@ -34,6 +34,7 @@ export class RunScreen {
   private readonly renderer: Renderer;
   private readonly hooks: RunHooks;
   private readonly canvas: HTMLCanvasElement;
+  private readonly under: HTMLCanvasElement;
   private readonly hudTop: HTMLDivElement;
   private readonly hudBottom: HTMLDivElement;
   private readonly liquid: HTMLDivElement;
@@ -49,6 +50,13 @@ export class RunScreen {
   private endTimer = 0;
   private slotKey = '';
   private lastPct = -1;
+  /** `?perf` in the URL shows frame cost, for checking on a real phone. */
+  private readonly perfEl: HTMLDivElement | null = new URLSearchParams(location.search).has('perf')
+    ? h('div', { class: 'perf num' })
+    : null;
+  private perfTimes: number[] = [];
+  private perfFrames = 0;
+  private perfSince = 0;
   private readonly onResize = () => this.layout();
   private readonly onVisibility = () => {
     if (document.hidden && this.world.state === 'playing') this.pause();
@@ -59,6 +67,7 @@ export class RunScreen {
     this.fast = hooks.fast;
     this.world = new World(setup);
     this.canvas = h('canvas');
+    this.under = h('canvas');
     const stage = this.world.stage;
     this.liquid = h('div', { class: 'liquid' });
     this.pctEl = h('div', { class: 'pct num', text: '0%' });
@@ -85,10 +94,10 @@ export class RunScreen {
       ),
     );
     this.hudBottom = h('div', { class: 'hud-bottom' });
-    this.el = h('div', { class: 'run' }, this.canvas, this.hudTop, this.hudBottom);
+    this.el = h('div', { class: 'run' }, this.under, this.canvas, this.hudTop, this.hudBottom, this.perfEl);
     parent.append(this.el);
 
-    this.renderer = new Renderer(this.canvas);
+    this.renderer = new Renderer(this.canvas, this.under);
     this.renderer.setShowNumbers(hooks.showNumbers);
     this.bindInput();
     window.addEventListener('resize', this.onResize);
@@ -139,6 +148,7 @@ export class RunScreen {
   }
 
   private readonly frame = (now: number): void => {
+    const t0 = performance.now();
     const dt = Math.min(0.1, (now - this.last) / 1000);
     this.last = now;
     const w = this.world;
@@ -160,8 +170,25 @@ export class RunScreen {
     this.syncState();
     this.renderer.render(w);
     this.updateHud();
+    if (this.perfEl) this.trackPerf(now, performance.now() - t0);
     this.raf = requestAnimationFrame(this.frame);
   };
+
+  private trackPerf(now: number, ms: number): void {
+    this.perfTimes.push(ms);
+    this.perfFrames++;
+    if (now - this.perfSince < 1000) return;
+    const sorted = [...this.perfTimes].sort((a, b) => a - b);
+    const avg = sorted.reduce((a, b) => a + b, 0) / sorted.length;
+    const p95 = sorted[Math.floor(sorted.length * 0.95)] ?? avg;
+    const fps = (this.perfFrames * 1000) / (now - this.perfSince);
+    const w = this.world;
+    this.perfEl!.textContent = `${fps.toFixed(0)} fps  ${avg.toFixed(1)}ms avg  ${p95.toFixed(1)}ms p95  ${w.projectiles.length} proj  ${w.visible().length} segs`;
+    (window as unknown as { __perf?: unknown }).__perf = { fps, avg, p95, proj: w.projectiles.length, segs: w.visible().length };
+    this.perfTimes = [];
+    this.perfFrames = 0;
+    this.perfSince = now;
+  }
 
   private drainEvents(): void {
     for (const e of this.world.events) {

@@ -31,7 +31,6 @@ export function drawSprite(ctx: CanvasRenderingContext2D, s: Sprite, x: number, 
 export class ThemeSprites {
   readonly ringA: Sprite;
   readonly ringB: Sprite;
-  readonly outline: Sprite;
   readonly flash: Sprite;
   readonly chest: Sprite;
   readonly elite: Sprite;
@@ -43,7 +42,6 @@ export class ThemeSprites {
     const p = (this.palette = PALETTES[theme]);
     this.ringA = ring(p, k, false);
     this.ringB = ring(p, k, true);
-    this.outline = silhouette(k);
     this.flash = makeSprite(SEG_RADIUS * 2 + 8, SEG_RADIUS * 2 + 8, k, (g) => {
       g.fillStyle = '#ffffff';
       g.beginPath();
@@ -79,21 +77,6 @@ function ring(p: Palette, k: number, alt: boolean): Sprite {
     g.ellipse(-R * 0.38, -R * 0.45, R * 0.24, R * 0.13, -0.5, 0, Math.PI * 2);
     g.fill();
     g.globalAlpha = 1;
-  });
-}
-
-/** Ink silhouette drawn under every ring so the whole train reads as one body. */
-function silhouette(k: number): Sprite {
-  const R = SEG_RADIUS;
-  return makeSprite(R * 2 + 16, R * 2 + 22, k, (g) => {
-    g.fillStyle = 'rgba(0,0,0,0.22)';
-    g.beginPath();
-    g.ellipse(0, 6, R + 2, R * 0.92, 0, 0, Math.PI * 2);
-    g.fill();
-    g.fillStyle = INK;
-    g.beginPath();
-    g.arc(0, 0, R + 2.6, 0, Math.PI * 2);
-    g.fill();
   });
 }
 
