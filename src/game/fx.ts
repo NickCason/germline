@@ -40,7 +40,7 @@ export interface Bolt {
   max: number;
 }
 
-const MAX_NUMBERS = 70;
+const MAX_NUMBERS = 48;
 const MAX_PARTICLES = 420;
 
 /**
@@ -71,8 +71,8 @@ export class Fx {
       x: x + this.rng.range(-14, 14),
       y,
       vy: -60,
-      life: crit ? 0.8 : 0.55,
-      max: crit ? 0.8 : 0.55,
+      life: crit ? 0.7 : 0.42,
+      max: crit ? 0.7 : 0.42,
       text: fmt(Math.max(1, Math.round(dmg))),
       crit,
     });

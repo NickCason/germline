@@ -271,7 +271,7 @@ export class World {
     const dealt = Math.min(dmg, dmg + seg.hp);
     this.damageDealt += dealt;
     w.dealt += dealt;
-    this.fx.number(seg.x, seg.y - 8, dmg, crit);
+    this.fx.number(seg.x, seg.y - 22, dmg, crit);
     if (seg.hp <= 0) this.kill(seg);
     return dmg;
   }
