@@ -1,6 +1,7 @@
 import { LOADOUT_SLOTS } from '../game/constants';
+import type { CostumeId } from '../game/costumes';
 import type { Difficulty } from '../game/stage';
-import type { WeaponId } from '../game/types';
+import type { AimMode, WeaponId } from '../game/types';
 import { WEAPON_UNLOCK_ORDER, WEAPONS } from '../game/weapons';
 
 export type HeroStatKey = 'atk' | 'crit' | 'critDmg' | 'cdr';
@@ -25,8 +26,20 @@ export interface SaveData {
   maxChapter: number;
   stages: Record<string, StageRecord>;
   selected: { chapter: number; difficulty: Difficulty };
-  settings: { sfx: boolean; numbers: boolean; fast: boolean };
-  stats: { runs: number; wins: number; kills: number };
+  /** Battle tab mode. */
+  mode: 'chapters' | 'endless';
+  costume: CostumeId;
+  endlessBest: number;
+  settings: {
+    sfx: boolean;
+    sfxVol: number;
+    music: boolean;
+    musicVol: number;
+    numbers: boolean;
+    fast: boolean;
+    aim: AimMode;
+  };
+  stats: { runs: number; wins: number; kills: number; ults: number; powers: number };
 }
 
 const KEY = 'germline.save.v1';
@@ -44,8 +57,11 @@ export function freshSave(): SaveData {
     maxChapter: 1,
     stages: {},
     selected: { chapter: 1, difficulty: 'normal' },
-    settings: { sfx: true, numbers: true, fast: false },
-    stats: { runs: 0, wins: 0, kills: 0 },
+    mode: 'chapters',
+    costume: 'classic',
+    endlessBest: 0,
+    settings: { sfx: true, sfxVol: 0.8, music: true, musicVol: 0.5, numbers: true, fast: false, aim: 'auto' },
+    stats: { runs: 0, wins: 0, kills: 0, ults: 0, powers: 0 },
   };
 }
 

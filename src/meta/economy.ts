@@ -1,3 +1,4 @@
+import { COSTUMES, type CostumeId } from '../game/costumes';
 import { HARD_HP, HP_GROWTH, stageDef, type Difficulty } from '../game/stage';
 import type { HeroStats, WeaponId } from '../game/types';
 import { WEAPON_UNLOCK_ORDER } from '../game/weapons';
@@ -87,15 +88,44 @@ export interface RunRewards {
   coins: number;
   shards: Partial<Record<WeaponId, number>>;
   unlocked: WeaponId[];
+  costumes: CostumeId[];
   newChapter: boolean;
   firstClear: boolean;
   progress: number;
   won: boolean;
+  /** Endless only. */
+  score?: number;
+  newBest?: boolean;
+}
+
+export function costumeUnlocked(save: SaveData, id: CostumeId): boolean {
+  const unlock = COSTUMES[id].unlock;
+  switch (unlock.kind) {
+    case 'free':
+      return true;
+    case 'chapter':
+      return save.maxChapter > unlock.chapter;
+    case 'hard':
+      return Object.entries(save.stages).some(([key, rec]) => key.endsWith('-hard') && rec.cleared);
+  }
+}
+
+function unlockedCostumes(save: SaveData): CostumeId[] {
+  return (Object.keys(COSTUMES) as CostumeId[]).filter((id) => costumeUnlocked(save, id));
+}
+
+/** Endless runs unlock once chapter 2 is cleared. */
+export function endlessUnlocked(save: SaveData): boolean {
+  return save.maxChapter > 2;
 }
 
 /** Bank the results of a finished run into the save. */
 export function settleRun(save: SaveData, world: World, rng: () => number = Math.random): RunRewards {
   const stage = world.stage;
+  const costumesBefore = new Set(unlockedCostumes(save));
+  save.stats.ults += world.ultsUsed;
+  save.stats.powers += world.powersUsed;
+  if (stage.endless) return settleEndless(save, world, rng);
   const won = world.state === 'won';
   const progress = world.progress;
   let coins = world.coins;
@@ -135,7 +165,26 @@ export function settleRun(save: SaveData, world: World, rng: () => number = Math
   save.stats.runs++;
   if (won) save.stats.wins++;
   save.stats.kills += world.chain.killed;
-  return { coins, shards, unlocked, newChapter, firstClear, progress, won };
+  const costumes = unlockedCostumes(save).filter((id) => !costumesBefore.has(id));
+  return { coins, shards, unlocked, costumes, newChapter, firstClear, progress, won };
+}
+
+function settleEndless(save: SaveData, world: World, rng: () => number): RunRewards {
+  const score = world.score;
+  const newBest = score > save.endlessBest;
+  save.endlessBest = Math.max(save.endlessBest, score);
+  const coins = world.coins;
+  const pool: WeaponId[] = ['capsule', ...save.loadout];
+  const shards: Partial<Record<WeaponId, number>> = {};
+  for (let i = 0; i < Math.floor(score / 20); i++) {
+    const id = pool[Math.floor(rng() * pool.length)];
+    shards[id] = (shards[id] ?? 0) + 1;
+    save.weapons[id].shards++;
+  }
+  save.coins += coins;
+  save.stats.runs++;
+  save.stats.kills += score;
+  return { coins, shards, unlocked: [], costumes: [], newChapter: false, firstClear: false, progress: 0, won: false, score, newBest };
 }
 
 export const MILESTONES = [0.25, 0.5, 1] as const;

@@ -1,4 +1,5 @@
 import { SEG_RADIUS } from '../game/constants';
+import { COSTUMES, type CostumeId } from '../game/costumes';
 import type { ThemeId } from '../game/stage';
 import { PALETTES, type Palette } from '../game/themes';
 
@@ -35,7 +36,6 @@ export class ThemeSprites {
   readonly chest: Sprite;
   readonly elite: Sprite;
   readonly head: Sprite;
-  readonly hero: Sprite;
   readonly palette: Palette;
 
   constructor(theme: ThemeId, k: number) {
@@ -51,7 +51,6 @@ export class ThemeSprites {
     this.chest = chest(k, false);
     this.elite = chest(k, true);
     this.head = virusHead(p, k);
-    this.hero = heartHero(k);
   }
 }
 
@@ -233,37 +232,230 @@ export function heartPath(g: CanvasRenderingContext2D, s: number): void {
   g.closePath();
 }
 
-/** The hero without pupils or syringe; those follow the aim each frame. */
-function heartHero(k: number): Sprite {
-  return makeSprite(70, 70, k, (g) => {
-    g.fillStyle = 'rgba(0,0,0,0.25)';
-    g.beginPath();
-    g.ellipse(0, 25, 22, 6, 0, 0, Math.PI * 2);
-    g.fill();
-    const grad = g.createRadialGradient(-8, -10, 2, 0, 0, 30);
-    grad.addColorStop(0, '#ff9db0');
-    grad.addColorStop(1, '#ef3a5d');
-    g.fillStyle = grad;
+/**
+ * The hero: a heart-shaped cell in one of several costumes. Pupils and the
+ * syringe are drawn per frame so they can follow the aim.
+ */
+export function drawHeroBody(g: CanvasRenderingContext2D, costume: CostumeId, pupils: boolean): void {
+  const [dark, light] = COSTUMES[costume].heart;
+  g.lineJoin = 'round';
+  g.lineCap = 'round';
+  g.fillStyle = 'rgba(0,0,0,0.25)';
+  g.beginPath();
+  g.ellipse(0, 26, 22, 6, 0, 0, Math.PI * 2);
+  g.fill();
+  if (costume === 'royal') {
+    // cape behind the body
+    g.fillStyle = '#b3132e';
     g.strokeStyle = INK;
-    g.lineWidth = 3;
-    g.lineJoin = 'round';
-    heartPath(g, 25);
+    g.lineWidth = 2.5;
+    g.beginPath();
+    g.moveTo(-20, -6);
+    g.quadraticCurveTo(-36, 14, -30, 28);
+    g.lineTo(30, 28);
+    g.quadraticCurveTo(36, 14, 20, -6);
+    g.closePath();
     g.fill();
     g.stroke();
-    g.fillStyle = '#ffffff';
-    g.lineWidth = 2;
-    for (const ex of [-9, 9]) {
+  }
+  const grad = g.createRadialGradient(-8, -10, 2, 0, 0, 30);
+  grad.addColorStop(0, light);
+  grad.addColorStop(1, dark);
+  g.fillStyle = grad;
+  g.strokeStyle = INK;
+  g.lineWidth = 3;
+  heartPath(g, 25);
+  g.fill();
+  g.stroke();
+  if (costume === 'ninja') {
+    // mask band across the eyes, headband tails streaming behind
+    g.fillStyle = '#2a2238';
+    g.beginPath();
+    g.moveTo(-23, -14);
+    g.lineTo(23, -14);
+    g.lineTo(21, 2);
+    g.lineTo(-21, 2);
+    g.closePath();
+    g.fill();
+    g.beginPath();
+    g.moveTo(-22, -10);
+    g.quadraticCurveTo(-34, -14, -42, -4);
+    g.lineTo(-38, 0);
+    g.quadraticCurveTo(-32, -8, -22, -4);
+    g.closePath();
+    g.fill();
+    g.stroke();
+  }
+  g.fillStyle = '#ffffff';
+  g.strokeStyle = INK;
+  g.lineWidth = 2;
+  for (const ex of [-9, 9]) {
+    g.beginPath();
+    g.ellipse(ex, -4, 7, 8, 0, 0, Math.PI * 2);
+    g.fill();
+    g.stroke();
+  }
+  if (pupils) {
+    g.fillStyle = INK;
+    for (const ex of costume === 'pirate' ? [-9] : [-9, 9]) {
       g.beginPath();
-      g.ellipse(ex, -4, 7, 8, 0, 0, Math.PI * 2);
+      g.arc(ex + 1.5, -3, 3.4, 0, Math.PI * 2);
+      g.fill();
+    }
+  }
+  g.globalAlpha = 0.65;
+  g.fillStyle = '#ffffff';
+  g.beginPath();
+  g.ellipse(-14, -14, 5, 3, -0.6, 0, Math.PI * 2);
+  g.fill();
+  g.globalAlpha = 1;
+  g.strokeStyle = INK;
+  switch (costume) {
+    case 'nurse': {
+      g.fillStyle = '#ffffff';
+      g.lineWidth = 2.5;
+      g.beginPath();
+      g.moveTo(-15, -20);
+      g.lineTo(-11, -36);
+      g.quadraticCurveTo(0, -41, 11, -36);
+      g.lineTo(15, -20);
+      g.quadraticCurveTo(0, -25, -15, -20);
+      g.closePath();
       g.fill();
       g.stroke();
+      g.fillStyle = '#ff4f6d';
+      g.fillRect(-2.5, -35, 5, 12);
+      g.fillRect(-6, -31.5, 12, 5);
+      break;
     }
-    g.globalAlpha = 0.65;
-    g.beginPath();
-    g.ellipse(-14, -14, 5, 3, -0.6, 0, Math.PI * 2);
-    g.fill();
-    g.globalAlpha = 1;
-  });
+    case 'pirate': {
+      g.fillStyle = '#d7263d';
+      g.lineWidth = 2.5;
+      g.beginPath();
+      g.moveTo(-27, -12);
+      g.quadraticCurveTo(-18, -34, 0, -34);
+      g.quadraticCurveTo(18, -34, 27, -12);
+      g.quadraticCurveTo(14, -22, 0, -22);
+      g.quadraticCurveTo(-14, -22, -27, -12);
+      g.closePath();
+      g.fill();
+      g.stroke();
+      g.fillStyle = '#ffffff';
+      for (const [dx, dy] of [
+        [-14, -26],
+        [0, -29],
+        [14, -26],
+      ]) {
+        g.beginPath();
+        g.arc(dx, dy, 2, 0, Math.PI * 2);
+        g.fill();
+      }
+      g.fillStyle = '#d7263d';
+      g.beginPath();
+      g.moveTo(26, -14);
+      g.lineTo(38, -20);
+      g.lineTo(34, -10);
+      g.closePath();
+      g.moveTo(26, -12);
+      g.lineTo(36, -4);
+      g.lineTo(28, -4);
+      g.closePath();
+      g.fill();
+      g.stroke();
+      // eyepatch over the right eye
+      g.lineWidth = 2;
+      g.beginPath();
+      g.moveTo(-22, -16);
+      g.lineTo(24, 2);
+      g.stroke();
+      g.fillStyle = '#1b1426';
+      g.beginPath();
+      g.ellipse(9, -4, 8, 8.5, 0, 0, Math.PI * 2);
+      g.fill();
+      break;
+    }
+    case 'wizard': {
+      g.fillStyle = '#6c4bd1';
+      g.lineWidth = 2.5;
+      g.beginPath();
+      g.moveTo(-17, -22);
+      g.quadraticCurveTo(-6, -40, 2, -60);
+      g.quadraticCurveTo(10, -42, 17, -22);
+      g.closePath();
+      g.fill();
+      g.stroke();
+      g.beginPath();
+      g.ellipse(0, -21, 27, 6, 0, 0, Math.PI * 2);
+      g.fill();
+      g.stroke();
+      g.fillStyle = '#ffd34d';
+      for (const [sx, sy, r] of [
+        [-4, -32, 3.5],
+        [6, -44, 2.6],
+        [5, -27, 2],
+      ]) {
+        g.beginPath();
+        for (let i = 0; i < 10; i++) {
+          const rr = i % 2 === 0 ? r : r * 0.45;
+          const a = (i / 10) * Math.PI * 2 - Math.PI / 2;
+          g.lineTo(sx + Math.cos(a) * rr, sy + Math.sin(a) * rr);
+        }
+        g.closePath();
+        g.fill();
+      }
+      break;
+    }
+    case 'astronaut': {
+      g.fillStyle = 'rgba(190,230,255,0.22)';
+      g.lineWidth = 2.5;
+      g.beginPath();
+      g.arc(0, -2, 33, 0, Math.PI * 2);
+      g.fill();
+      g.stroke();
+      g.strokeStyle = 'rgba(255,255,255,0.75)';
+      g.lineWidth = 3;
+      g.beginPath();
+      g.arc(0, -2, 27, Math.PI * 1.1, Math.PI * 1.45);
+      g.stroke();
+      g.strokeStyle = INK;
+      g.lineWidth = 2.5;
+      g.beginPath();
+      g.moveTo(16, -30);
+      g.lineTo(22, -44);
+      g.stroke();
+      g.fillStyle = '#ff4f6d';
+      g.beginPath();
+      g.arc(23, -46, 4, 0, Math.PI * 2);
+      g.fill();
+      g.stroke();
+      break;
+    }
+    case 'royal': {
+      g.fillStyle = '#ffc93c';
+      g.lineWidth = 2.5;
+      g.beginPath();
+      g.moveTo(-15, -22);
+      g.lineTo(-17, -40);
+      g.lineTo(-8, -31);
+      g.lineTo(0, -44);
+      g.lineTo(8, -31);
+      g.lineTo(17, -40);
+      g.lineTo(15, -22);
+      g.closePath();
+      g.fill();
+      g.stroke();
+      g.fillStyle = '#e63e6d';
+      g.beginPath();
+      g.arc(0, -27, 3.5, 0, Math.PI * 2);
+      g.fill();
+      g.stroke();
+      break;
+    }
+  }
+}
+
+export function heroSprite(costume: CostumeId, k: number): Sprite {
+  return makeSprite(100, 124, k, (g) => drawHeroBody(g, costume, false));
 }
 
 export function lighten(hex: string, amt: number): string {

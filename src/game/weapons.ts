@@ -82,8 +82,12 @@ const capsuleStep: Step = (world, p, dt) => {
   return false;
 };
 
-function capsuleVolley(world: World, w: OwnedWeapon, t: Segment): void {
-  const a = world.aimFromHero(t.x, t.y);
+/** A capsule volley from (ox, oy) toward the current aim point. Returns the angle, or null. */
+export function capsuleVolleyFrom(world: World, w: OwnedWeapon, ox: number, oy: number): number | null {
+  const target = world.aimPoint();
+  if (!target) return null;
+  let a = Math.atan2(target.y - oy, target.x - ox);
+  if (world.hero.mobile) a = Math.min(-0.3, Math.max(-Math.PI + 0.3, a));
   const n = world.qty(w);
   const cos = Math.cos(a);
   const sin = Math.sin(a);
@@ -91,10 +95,16 @@ function capsuleVolley(world: World, w: OwnedWeapon, t: Segment): void {
   const dmg = world.weaponDamage(w);
   for (let i = 0; i < n; i++) {
     const off = (i - (n - 1) / 2) * 15;
-    const x = world.hero.x + cos * 26 - sin * off;
-    const y = world.hero.y - 8 + sin * 26 + cos * off;
+    const x = ox + cos * 26 - sin * off;
+    const y = oy - 8 + sin * 26 + cos * off;
     world.spawn(proj('capsule', w, x, y, cos * speed, sin * speed, 7, dmg, 1.4, capsuleStep, { pierce: w.stats.pierce }));
   }
+  return a;
+}
+
+function capsuleVolley(world: World, w: OwnedWeapon): void {
+  const a = capsuleVolleyFrom(world, w, world.hero.x, world.hero.y);
+  if (a === null) return;
   world.hero.aim = a;
   world.hero.recoil = 1;
 }
@@ -102,16 +112,15 @@ function capsuleVolley(world: World, w: OwnedWeapon, t: Segment): void {
 const capsule: WeaponDef = {
   id: 'capsule',
   name: 'Capsule',
-  blurb: 'Your trusty pill launcher. Always fires at the front of the train.',
+  blurb: 'Your trusty pill launcher. Fires at the front of the train, or wherever you aim.',
   cooldown: 0.3,
   power: 1,
   qty: 1,
   getRarity: 'common',
   color: '#9fd8ff',
   fire(world, w) {
-    const t = world.front();
-    if (!t) return false;
-    capsuleVolley(world, w, t);
+    if (!world.aimPoint()) return false;
+    capsuleVolley(world, w);
     if (w.stats.burst > 0) {
       w.timers.burstLeft = w.stats.burst;
       w.timers.burstT = 0.07;
@@ -127,8 +136,7 @@ const capsule: WeaponDef = {
     if ((w.timers.burstLeft ?? 0) > 0) {
       w.timers.burstT -= dt;
       if (w.timers.burstT <= 0) {
-        const t = world.front();
-        if (t) capsuleVolley(world, w, t);
+        capsuleVolley(world, w);
         w.timers.burstLeft--;
         w.timers.burstT = 0.07;
       }
@@ -178,7 +186,7 @@ const swab: WeaponDef = {
   fire(world, w) {
     const n = world.qty(w);
     for (let i = 0; i < n; i++) {
-      const t = i === 0 ? world.front() : world.randomVisible();
+      const t = i === 0 ? world.primaryTarget() : world.randomVisible();
       if (!t) continue;
       world.spawn(proj('swab', w, world.hero.x, world.hero.y - 20, 0, 0, 20 * w.stats.size, world.weaponDamage(w), 5, swabStep, { tx: t.x, ty: t.y }));
     }
@@ -197,6 +205,20 @@ const needleStep: Step = (world, p, dt) => {
   if (!seg) return true;
   p.hit.add(seg.id);
   world.hit(seg, p.dmg, p.w);
+  if (p.w.stats.flags.has('arc') && !p.child && !p.ty) {
+    // Lightning Rod: the first hit arcs to two neighbours.
+    p.ty = 1;
+    const done = new Set([seg.id]);
+    let from = seg;
+    for (let k = 0; k < 2; k++) {
+      const next = world.nearest(from.x, from.y, done);
+      if (!next || Math.hypot(next.x - from.x, next.y - from.y) > 160) break;
+      done.add(next.id);
+      world.fx.bolt(from.x, from.y, next.x, next.y);
+      world.hit(next, p.dmg * 0.7, p.w);
+      from = next;
+    }
+  }
   const split = p.w.stats.split;
   if (!p.child && split > 0 && !p.phase) {
     p.phase = 1;
@@ -229,7 +251,7 @@ const needle: WeaponDef = {
     const sp = 1150 * w.stats.speed;
     const dmg = world.weaponDamage(w);
     for (let i = 0; i < n; i++) {
-      const t = i === 0 ? world.front() : world.randomVisible();
+      const t = i === 0 ? world.primaryTarget() : world.randomVisible();
       if (!t) continue;
       const a = world.aimFromHero(t.x, t.y) + world.rng.range(-0.05, 0.05);
       world.spawn(
@@ -419,7 +441,7 @@ const roller: WeaponDef = {
   fire(world, w) {
     const n = world.qty(w);
     for (let i = 0; i < n; i++) {
-      const t = i === 0 ? world.front() : world.randomVisible();
+      const t = i === 0 ? world.primaryTarget() : world.randomVisible();
       if (!t) continue;
       w.timers.side = 1 - (w.timers.side ?? 0);
       const fromLeft = w.timers.side === 1;
@@ -448,7 +470,7 @@ const tower: WeaponDef = {
     const life = 6 * w.stats.duration;
     const bottom = world.layout.fenceY !== null ? world.layout.fenceY - 40 : FIELD_H - 40;
     for (let i = 0; i < n; i++) {
-      const t = i === 0 ? world.front() : world.randomVisible();
+      const t = i === 0 ? world.primaryTarget() : world.randomVisible();
       if (!t) continue;
       const x = Math.min(FIELD_W - 24, Math.max(24, t.x + world.rng.range(-80, 80)));
       const y = Math.min(bottom, Math.max(40, t.y + world.rng.range(-80, 80)));
@@ -529,7 +551,7 @@ const scalpel: WeaponDef = {
   getRarity: 'epic',
   color: '#d8e4f0',
   fire(world, w) {
-    const t = world.front();
+    const t = world.primaryTarget();
     if (!t) return false;
     const n = world.qty(w);
     const base = world.aimFromHero(t.x, t.y);
@@ -661,7 +683,7 @@ function pickCloudTarget(world: World, x: number, y: number): Segment | undefine
       best = seg;
     }
   }
-  return best ?? world.front();
+  return best ?? world.primaryTarget();
 }
 
 export const WEAPONS: Record<WeaponId, WeaponDef> = {

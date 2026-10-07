@@ -8,7 +8,13 @@ import {
 } from './constants';
 import type { Path, PathPos } from './path';
 
+/** How far behind the track start the queued tail is kept. */
+const FEED_MARGIN = 400;
+
 export type SegKind = 'normal' | 'chest' | 'elite';
+
+/** Zuma-style power-ups that light up on a segment for a while; pop it to trigger. */
+export type PowerKind = 'freeze' | 'reverse' | 'bomb' | 'lightning' | 'rapid' | 'coins';
 
 export interface SegmentSpec {
   hp: number;
@@ -34,7 +40,13 @@ export interface Segment {
   flash: number;
   visible: boolean;
   alive: boolean;
+  /** Power-up riding on this segment, and seconds before it fades. */
+  power: PowerKind | null;
+  powerLife: number;
 }
+
+/** Supplies more segments behind the tail (endless mode). */
+export type SegmentFeed = () => SegmentSpec;
 
 /**
  * The germ train. The tail is pushed forward at a constant speed and every
@@ -45,7 +57,8 @@ export interface Segment {
 export class Chain {
   readonly path: Path;
   readonly segs: Segment[] = [];
-  readonly total: number;
+  /** Segments ever in the train (grows in endless mode). */
+  total: number;
   headS: number;
   head: PathPos = { x: 0, y: 0, a: 0 };
   /** Base push speed in units/second. */
@@ -58,33 +71,40 @@ export class Chain {
   private readonly rushDist: number;
   /** The rush only happens once; knockbacks must not re-trigger it. */
   private rushing: boolean;
+  private readonly feed: SegmentFeed | null;
 
-  constructor(path: Path, specs: readonly SegmentSpec[], speed: number, rushDist = 760) {
+  constructor(path: Path, specs: readonly SegmentSpec[], speed: number, rushDist = 760, feed: SegmentFeed | null = null) {
     this.path = path;
     this.speed = speed;
     this.rushDist = rushDist;
     this.rushing = rushDist > 0;
-    this.total = specs.length;
+    this.feed = feed;
+    this.total = 0;
     this.headS = 0;
-    specs.forEach((spec, i) => {
-      this.segs.push({
-        id: i + 1,
-        index: i,
-        kind: spec.kind,
-        s: -HEAD_GAP - i * SEG_LEN,
-        hp: spec.hp,
-        maxHp: spec.hp,
-        x: 0,
-        y: 0,
-        a: 0,
-        cx: new Float32Array(SEG_CIRCLE_OFFSETS.length),
-        cy: new Float32Array(SEG_CIRCLE_OFFSETS.length),
-        flash: 0,
-        visible: false,
-        alive: true,
-      });
-    });
+    for (const spec of specs) this.append(spec, -HEAD_GAP - this.total * SEG_LEN);
     this.place();
+  }
+
+  private append(spec: SegmentSpec, s: number): void {
+    const i = this.total++;
+    this.segs.push({
+      id: i + 1,
+      index: i,
+      kind: spec.kind,
+      s,
+      hp: spec.hp,
+      maxHp: spec.hp,
+      x: 0,
+      y: 0,
+      a: 0,
+      cx: new Float32Array(SEG_CIRCLE_OFFSETS.length),
+      cy: new Float32Array(SEG_CIRCLE_OFFSETS.length),
+      flash: 0,
+      visible: false,
+      alive: true,
+      power: null,
+      powerLife: 0,
+    });
   }
 
   get front(): Segment | undefined {
@@ -107,15 +127,20 @@ export class Chain {
     for (const seg of segs) if (seg.flash > 0) seg.flash -= dt;
     if (n === 0) return;
 
+    // Endless trains grow at the back so the tail is always just off-screen.
+    if (this.feed) {
+      while (segs[segs.length - 1].s > -FEED_MARGIN) this.append(this.feed(), segs[segs.length - 1].s - SEG_LEN);
+    }
     let v = this.speed * this.speedMult;
     if (this.rushing) {
       if (this.headS >= this.rushDist) this.rushing = false;
       else v *= 1 + 7 * (1 - Math.max(0, this.headS) / this.rushDist);
     }
-    segs[n - 1].s += v * dt;
+    const last = segs.length - 1;
+    segs[last].s += v * dt;
 
     const pull = RETRACT_SPEED * dt;
-    for (let j = n - 2; j >= 0; j--) {
+    for (let j = last - 1; j >= 0; j--) {
       const desired = segs[j + 1].s + SEG_LEN;
       const cur = segs[j].s;
       if (cur < desired) {
@@ -150,6 +175,11 @@ export class Chain {
   private place(): void {
     const tmp: PathPos = { x: 0, y: 0, a: 0 };
     for (const seg of this.segs) {
+      if (seg.s < -FEED_MARGIN) {
+        // Still queued off-screen: nothing to collide with or draw.
+        seg.visible = false;
+        continue;
+      }
       this.path.pos(seg.s, tmp);
       seg.x = tmp.x;
       seg.y = tmp.y;

@@ -1,5 +1,6 @@
 import { fmt } from '../core/format';
 import { LOADOUT_SLOTS } from '../game/constants';
+import { COSTUME_ORDER, COSTUMES, unlockText } from '../game/costumes';
 import { stageDef, type Difficulty, type ThemeId } from '../game/stage';
 import { PALETTES } from '../game/themes';
 import type { WeaponId } from '../game/types';
@@ -8,6 +9,8 @@ import { WEAPON_UNLOCK_ORDER, WEAPONS } from '../game/weapons';
 import {
   claimMilestone,
   combatPower,
+  costumeUnlocked,
+  endlessUnlocked,
   HERO_STAT_DEFS,
   MAX_WEAPON_LEVEL,
   MILESTONES,
@@ -16,10 +19,10 @@ import {
   weaponUpgradeCost,
 } from '../meta/economy';
 import { exportSave, freshSave, importSave, stageRecord, type SaveData } from '../meta/save';
-import { iconImg } from '../render/icons';
+import { costumeImg, iconImg } from '../render/icons';
 import { drawSprite, ThemeSprites } from '../render/sprites';
 import { clear, h, modal, toast } from './dom';
-import { sfx } from './sfx';
+import { audio } from './audio';
 
 export type Tab = 'hero' | 'battle' | 'weapons';
 
@@ -27,6 +30,8 @@ export interface HomeHooks {
   save: SaveData;
   persist(): void;
   replaceSave(save: SaveData): void;
+  /** Push the save's audio settings to the audio engine. */
+  applyAudio(): void;
   startRun(): void;
   tab: Tab;
   setTab(tab: Tab): void;
@@ -93,8 +98,8 @@ export class HomeScreen {
         {
           class: `tab${tab === id ? ' active' : ''}`,
           onclick: () => {
-            sfx.unlock();
-            sfx.play('tap');
+            audio.unlock();
+            audio.play('tap');
             this.hooks.setTab(id);
             this.render();
           },
@@ -109,6 +114,26 @@ export class HomeScreen {
 
   private renderBattle(): void {
     const save = this.save;
+    const canEndless = endlessUnlocked(save);
+    if (!canEndless) save.mode = 'chapters';
+    const modeBtn = (mode: SaveData['mode'], label: string) =>
+      h('button', {
+        class: save.mode === mode ? 'on' : '',
+        text: label,
+        disabled: mode === 'endless' && !canEndless,
+        onclick: () => {
+          audio.play('tap');
+          save.mode = mode;
+          this.hooks.persist();
+          this.render();
+        },
+      });
+    const modes = h('div', { class: 'segmented' }, modeBtn('chapters', 'Chapters'), modeBtn('endless', canEndless ? 'Endless' : 'Endless (clear ch. 2)'));
+    if (save.mode === 'endless') {
+      this.renderEndless(modes);
+      return;
+    }
+    this.body.append(modes);
     const sel = save.selected;
     sel.chapter = Math.min(Math.max(1, sel.chapter), save.maxChapter);
     const normal = stageRecord(save, sel.chapter, 'normal');
@@ -118,7 +143,7 @@ export class HomeScreen {
 
     const lens = h('div', { class: 'lens', style: `background:${PALETTES[stage.theme].floor}` }, this.headCanvas(stage.theme));
     const go = (d: number) => {
-      sfx.play('tap');
+      audio.play('tap');
       sel.chapter += d;
       sel.difficulty = 'normal';
       this.hooks.persist();
@@ -150,7 +175,7 @@ export class HomeScreen {
         disabled: d === 'hard' && !normal.cleared,
         title: d === 'hard' && !normal.cleared ? 'Clear normal first' : '',
         onclick: () => {
-          sfx.play('tap');
+          audio.play('tap');
           sel.difficulty = d;
           this.hooks.persist();
           this.render();
@@ -184,7 +209,7 @@ export class HomeScreen {
             }
             const got = claimMilestone(save, stage.chapter, stage.difficulty, i);
             if (!got) return;
-            sfx.play('chest');
+            audio.play('chest');
             this.hooks.persist();
             const shardCount = Object.values(got.shards).reduce((a, n) => a + (n ?? 0), 0);
             toast(`+${fmt(got.coins)} coins${shardCount ? ` and ${shardCount} shards` : ''}`);
@@ -207,8 +232,8 @@ export class HomeScreen {
       {
         class: 'pill red start',
         onclick: () => {
-          sfx.unlock();
-          sfx.play('tap');
+          audio.unlock();
+          audio.play('tap');
           this.hooks.startRun();
         },
       },
@@ -216,6 +241,42 @@ export class HomeScreen {
     );
 
     this.body.append(slide, h('div', { class: 'segmented' }, diffBtn('normal', 'Normal'), diffBtn('hard', 'Hard')), power, milestones, start);
+  }
+
+  private renderEndless(modes: HTMLElement): void {
+    const save = this.save;
+    const slide = h(
+      'div',
+      { class: 'slide' },
+      h(
+        'div',
+        { class: 'label' },
+        h('div', { class: 'chap', text: 'Endless' }),
+        h('div', { class: 'vname', text: 'Endless Mutation' }),
+        h('div', { class: 'chap', style: 'margin-top:auto', text: 'The train never ends. Toughness follows your chapter progress.' }),
+      ),
+      h('div', { class: 'specimen' }, h('div', { class: 'lens', style: `background:${PALETTES.violet.floor}` }, this.headCanvas('violet'))),
+    );
+    const best = h(
+      'div',
+      { class: 'power' },
+      h('div', {}, h('b', { class: 'num', text: fmt(save.endlessBest) }), 'Best score'),
+      h('div', {}, h('b', { class: 'num', text: fmt(combatPower(save)) }), 'Your power'),
+    );
+    const note = h('p', { class: 'mode-note', text: 'Every 20 segments destroyed pays a shard; coins scale with your best chapter.' });
+    const start = h(
+      'button',
+      {
+        class: 'pill red start',
+        onclick: () => {
+          audio.unlock();
+          audio.play('tap');
+          this.hooks.startRun();
+        },
+      },
+      'Start endless',
+    );
+    this.body.append(modes, slide, best, note, start);
   }
 
   private headCanvas(theme: ThemeId): HTMLCanvasElement {
@@ -262,7 +323,7 @@ export class HomeScreen {
                 if (save.coins < cost || maxed) return;
                 save.coins -= cost;
                 save.hero[def.key]++;
-                sfx.play('tap');
+                audio.play('tap');
                 this.hooks.persist();
                 this.render();
               },
@@ -273,9 +334,47 @@ export class HomeScreen {
         );
       }),
     );
+    const current = COSTUMES[save.costume];
+    const costumes = h(
+      'div',
+      { class: 'costumes' },
+      ...COSTUME_ORDER.map((id) => {
+        const unlocked = costumeUnlocked(save, id);
+        return h(
+          'button',
+          {
+            class: `costume${save.costume === id ? ' on' : ''}${unlocked ? '' : ' locked'}`,
+            ariaLabel: COSTUMES[id].name,
+            onclick: () => {
+              if (!unlocked) {
+                toast(unlockText(COSTUMES[id]));
+                return;
+              }
+              audio.play('tap');
+              save.costume = id;
+              this.hooks.persist();
+              this.render();
+            },
+          },
+          costumeImg(id),
+          unlocked ? null : h('span', { class: 'lockdot' }, iconImg('lock')),
+        );
+      }),
+    );
+    const info = h(
+      'div',
+      { class: 'costume-info' },
+      h('div', { class: 'cname', text: current.name }),
+      h('div', { class: 'perk', text: current.perk }),
+      h('div', { class: 'ultline' }, h('b', { text: current.ultName }), `: ${current.ultDesc}`),
+    );
     this.body.append(
-      h('div', { class: 'portrait' }, iconImg('heart')),
+      h('div', { class: 'portrait' }, costumeImg(save.costume)),
       h('div', { class: 'power' }, h('div', {}, h('b', { class: 'num', text: fmt(combatPower(save)) }), 'Combat power')),
+      h('div', { class: 'section-title', text: 'Costume: each has a perk and its own ultimate' }),
+      costumes,
+      info,
+      h('div', { class: 'section-title', text: 'Upgrades' }),
       list,
     );
   }
@@ -334,7 +433,7 @@ export class HomeScreen {
   }
 
   private openWeapon(id: WeaponId): void {
-    sfx.play('tap');
+    audio.play('tap');
     const save = this.save;
     const def = WEAPONS[id];
     const state = save.weapons[id];
@@ -364,7 +463,7 @@ export class HomeScreen {
             state.shards -= cost.shards;
             save.coins -= cost.coins;
             state.level++;
-            sfx.play('chest');
+            audio.play('chest');
             toast(`${def.name} is now level ${state.level}`);
             refresh();
           },
@@ -443,7 +542,7 @@ export class HomeScreen {
   // -------------------------------------------------------------- settings
 
   private openSettings(): void {
-    sfx.play('tap');
+    audio.play('tap');
     const save = this.save;
     const toggle = (label: string, get: () => boolean, set: (v: boolean) => void) => {
       const input = h('input', { attrs: { type: 'checkbox' } });
@@ -453,6 +552,20 @@ export class HomeScreen {
         this.hooks.persist();
       });
       return h('label', { class: 'toggle' }, h('span', { text: label }), input);
+    };
+    /** On/off plus a volume slider on one row. */
+    const audioRow = (label: string, getOn: () => boolean, setOn: (v: boolean) => void, getVol: () => number, setVol: (v: number) => void) => {
+      const box = h('input', { attrs: { type: 'checkbox', 'aria-label': label } });
+      box.checked = getOn();
+      box.addEventListener('change', () => {
+        setOn(box.checked);
+        this.hooks.persist();
+      });
+      const range = h('input', { attrs: { type: 'range', min: '0', max: '1', step: '0.05', 'aria-label': `${label} volume` } });
+      range.value = String(getVol());
+      range.addEventListener('input', () => setVol(Number(range.value)));
+      range.addEventListener('change', () => this.hooks.persist());
+      return h('div', { class: 'toggle audio' }, h('span', { text: label }), range, box);
     };
     const code = h('textarea', { class: 'code', attrs: { placeholder: 'Paste a backup code here to restore it', spellcheck: 'false' } });
     const close = () => {
@@ -465,12 +578,37 @@ export class HomeScreen {
         'div',
         { class: 'panel' },
         h('h2', { text: 'Settings' }),
-        toggle('Sound effects', () => save.settings.sfx, (v) => {
-          save.settings.sfx = v;
-          sfx.enabled = v;
-        }),
+        audioRow(
+          'Music',
+          () => save.settings.music,
+          (v) => {
+            save.settings.music = v;
+            this.hooks.applyAudio();
+            if (v) audio.music('menu');
+          },
+          () => save.settings.musicVol,
+          (v) => {
+            save.settings.musicVol = v;
+            this.hooks.applyAudio();
+          },
+        ),
+        audioRow(
+          'Sound effects',
+          () => save.settings.sfx,
+          (v) => {
+            save.settings.sfx = v;
+            this.hooks.applyAudio();
+          },
+          () => save.settings.sfxVol,
+          (v) => {
+            save.settings.sfxVol = v;
+            this.hooks.applyAudio();
+            audio.play('pop');
+          },
+        ),
         toggle('Damage numbers', () => save.settings.numbers, (v) => (save.settings.numbers = v)),
         toggle('Start runs at 2× speed', () => save.settings.fast, (v) => (save.settings.fast = v)),
+        toggle('Manual aim: touch the train to target', () => save.settings.aim === 'manual', (v) => (save.settings.aim = v ? 'manual' : 'auto')),
         h('h2', { style: 'margin-top:14px', text: 'Backup' }),
         h('p', { text: 'Your progress lives on this device. Copy the code somewhere safe, or paste one to move progress between devices.' }),
         h(

@@ -1,11 +1,11 @@
 import { hashSeed } from '../core/rng';
-import { stageDef } from '../game/stage';
+import { endlessDef, stageDef } from '../game/stage';
 import type { WeaponId } from '../game/types';
-import { heroStats, settleRun } from '../meta/economy';
+import { costumeUnlocked, endlessUnlocked, heroStats, settleRun } from '../meta/economy';
 import { loadSave, writeSave, type SaveData } from '../meta/save';
+import { audio } from './audio';
 import { HomeScreen, type Tab } from './home';
 import { RunScreen } from './run';
-import { sfx } from './sfx';
 
 /** Switches between the home screen and a run, and owns the save. */
 export class App {
@@ -18,7 +18,10 @@ export class App {
   constructor(root: HTMLElement) {
     this.root = root;
     this.save = loadSave();
-    sfx.enabled = this.save.settings.sfx;
+    this.applyAudio();
+    // Any first tap anywhere starts the audio engine (iOS needs a gesture).
+    window.addEventListener('pointerdown', () => audio.unlock(), { capture: true });
+    document.addEventListener('visibilitychange', () => audio.suspend(document.hidden));
   }
 
   start(): void {
@@ -29,21 +32,29 @@ export class App {
     writeSave(this.save);
   }
 
+  private applyAudio(): void {
+    const s = this.save.settings;
+    audio.setSfx(s.sfx, s.sfxVol);
+    audio.setMusic(s.music, s.musicVol);
+  }
+
   private showHome(): void {
     this.run?.destroy();
     this.run = null;
     this.home?.destroy();
+    audio.music('menu');
     const app = this;
     this.home = new HomeScreen(this.root, {
       save: this.save,
       persist: () => this.persist(),
       replaceSave: (save) => {
         this.save = save;
-        sfx.enabled = save.settings.sfx;
+        this.applyAudio();
         this.persist();
         // Rebuild so every screen sees the new save object.
         this.showHome();
       },
+      applyAudio: () => this.applyAudio(),
       startRun: () => this.startRun(),
       get tab() {
         return app.tab;
@@ -58,16 +69,21 @@ export class App {
     const save = this.save;
     const { chapter, difficulty } = save.selected;
     const levels = Object.fromEntries(Object.entries(save.weapons).map(([id, w]) => [id, w.level])) as Record<WeaponId, number>;
+    const seed = hashSeed(Date.now(), Math.random());
+    const endless = save.mode === 'endless' && endlessUnlocked(save);
+    if (!costumeUnlocked(save, save.costume)) save.costume = 'classic';
     this.home?.destroy();
     this.home = null;
     this.run = new RunScreen(
       this.root,
       {
-        stage: stageDef(chapter, difficulty),
+        stage: endless ? endlessDef(save.maxChapter, seed) : stageDef(chapter, difficulty),
         hero: heroStats(save),
         loadout: [...save.loadout],
         levels,
-        seed: hashSeed(Date.now(), Math.random()),
+        seed,
+        costume: save.costume,
+        aimMode: save.settings.aim,
       },
       {
         settle: (world) => {
@@ -76,12 +92,9 @@ export class App {
           return rewards;
         },
         exit: () => this.showHome(),
-        showNumbers: save.settings.numbers,
-        fast: save.settings.fast,
-        setFast: (on) => {
-          save.settings.fast = on;
-          this.persist();
-        },
+        settings: save.settings,
+        persist: () => this.persist(),
+        best: save.endlessBest,
       },
     );
   }

@@ -20,6 +20,12 @@ export interface CardDef {
   weight?: number;
   /** "Get <weapon>" card. */
   grants?: WeaponId;
+  /** Evolution: needs this partner weapon owned and `picks` upgrades on the main one. */
+  evo?: { partner: WeaponId; picks: number };
+  /** Devil's bargain: a big boon with a cost, only offered from gold chests. */
+  bargain?: boolean;
+  /** Extra availability rule. */
+  when?(world: World): boolean;
   desc(v: number): string;
   apply(world: World, w: OwnedWeapon | null, v: number): void;
 }
@@ -455,6 +461,150 @@ const WEAPON_CARDS: CardDef[] = [
   }),
 ];
 
+/**
+ * Evolutions (Survivor.io / Vampire Survivors style): invest in a weapon,
+ * own its partner, and a one-time legendary transformation appears.
+ */
+const EVOLUTIONS: CardDef[] = [
+  {
+    id: 'evo_wildfire',
+    weapon: 'swab',
+    name: 'Wildfire',
+    tiers: { legendary: 1 },
+    max: 1,
+    weight: 4,
+    evo: { partner: 'meteor', picks: 3 },
+    desc: () => 'Swabs grow 50% and burn twice as hard; every meteor leaves fire behind',
+    apply: (world, w) => {
+      w!.stats.size *= 1.5;
+      w!.stats.dmgMult *= 2;
+      world.owned('meteor')?.stats.flags.add('burn');
+    },
+  },
+  {
+    id: 'evo_rod',
+    weapon: 'needle',
+    name: 'Lightning Rod',
+    tiers: { legendary: 1 },
+    max: 1,
+    weight: 4,
+    evo: { partner: 'satellite', picks: 3 },
+    desc: () => 'Needles arc lightning to two neighbours; clouds strike 30% faster',
+    apply: (world, w) => {
+      w!.stats.flags.add('arc');
+      const sat = world.owned('satellite');
+      if (sat) sat.stats.cdMult *= 0.7;
+    },
+  },
+  {
+    id: 'evo_slime',
+    weapon: 'bubble',
+    name: 'Slime Bath',
+    tiers: { legendary: 1 },
+    max: 1,
+    weight: 4,
+    evo: { partner: 'snot', picks: 3 },
+    desc: () => 'Bubbles leave burning puddles; snot +1 and explodes when it expires',
+    apply: (world, w) => {
+      w!.stats.flags.add('puddle');
+      const snot = world.owned('snot');
+      if (snot) {
+        snot.stats.qty += 1;
+        snot.stats.flags.add('sneeze');
+      }
+    },
+  },
+  {
+    id: 'evo_surgery',
+    weapon: 'capsule',
+    name: 'Surgical Strike',
+    tiers: { legendary: 1 },
+    max: 1,
+    weight: 4,
+    evo: { partner: 'scalpel', picks: 4 },
+    desc: () => 'Capsules pierce +2 and hit 50% harder; scalpels +2',
+    apply: (world, w) => {
+      w!.stats.pierce += 2;
+      w!.stats.dmgMult *= 1.5;
+      const sc = world.owned('scalpel');
+      if (sc) sc.stats.qty += 2;
+    },
+  },
+  {
+    id: 'evo_grid',
+    weapon: 'tower',
+    name: 'Power Grid',
+    tiers: { legendary: 1 },
+    max: 1,
+    weight: 4,
+    evo: { partner: 'roller', picks: 3 },
+    desc: () => 'Towers +2 and last twice as long; rollers shove the train back',
+    apply: (world, w) => {
+      w!.stats.qty += 2;
+      w!.stats.duration *= 2;
+      world.owned('roller')?.stats.flags.add('knock');
+    },
+  },
+];
+
+/** Archero-style devil's bargains: only from gold chests, always with a catch. */
+const BARGAINS: CardDef[] = [
+  {
+    id: 'bargain_blood',
+    weapon: null,
+    name: 'Blood Pact',
+    tiers: { legendary: 1 },
+    max: 1,
+    bargain: true,
+    when: (world) => world.revives > 0,
+    desc: () => 'All damage +60%, but you lose a revive',
+    apply: (world) => {
+      world.globalDmg *= 1.6;
+      world.revives -= 1;
+    },
+  },
+  {
+    id: 'bargain_greed',
+    weapon: null,
+    name: 'Greed',
+    tiers: { legendary: 1 },
+    max: 1,
+    bargain: true,
+    desc: () => 'Coins from this run doubled, but the train moves 12% faster',
+    apply: (world) => {
+      world.coinBonus += 1;
+      world.slow = Math.max(-0.5, world.slow - 0.12);
+    },
+  },
+  {
+    id: 'bargain_overclock',
+    weapon: null,
+    name: 'Overclock',
+    tiers: { legendary: 1 },
+    max: 1,
+    bargain: true,
+    desc: () => 'All cooldowns -30%, but the train moves 10% faster',
+    apply: (world) => {
+      world.globalCd *= 0.7;
+      world.slow = Math.max(-0.5, world.slow - 0.1);
+    },
+  },
+  {
+    id: 'bargain_glass',
+    weapon: null,
+    name: 'Glass Cannon',
+    tiers: { legendary: 1 },
+    max: 1,
+    bargain: true,
+    when: (world) => world.takeAlls > 0,
+    desc: () => 'Crit damage +150%, but you lose a take-all',
+    apply: (world) => {
+      world.globalCritDmg += 1.5;
+      world.takeAlls -= 1;
+    },
+  },
+];
+
 const GET_CARDS: CardDef[] = (Object.keys(WEAPONS) as WeaponId[])
   .filter((id) => id !== 'capsule')
   .map((id) => ({
@@ -471,18 +621,45 @@ const GET_CARDS: CardDef[] = (Object.keys(WEAPONS) as WeaponId[])
     },
   }));
 
-export const ALL_CARDS: readonly CardDef[] = [...GET_CARDS, ...GLOBAL_CARDS, ...WEAPON_CARDS];
+export const ALL_CARDS: readonly CardDef[] = [...GET_CARDS, ...GLOBAL_CARDS, ...WEAPON_CARDS, ...EVOLUTIONS];
+export { BARGAINS, EVOLUTIONS };
 
-const RARITY_WEIGHT: Record<'normal' | 'elite', Record<Rarity, number>> = {
-  normal: { common: 52, rare: 32, epic: 12, legendary: 4 },
-  elite: { common: 0, rare: 30, epic: 48, legendary: 22 },
+/**
+ * Rarity odds by "luck" level: 0 for a fresh chest, +1 for each reroll on it
+ * (the original's "higher probability to trigger advanced affix").
+ */
+const RARITY_LADDER: Record<'normal' | 'elite', Record<Rarity, number>[]> = {
+  normal: [
+    { common: 52, rare: 32, epic: 12, legendary: 4 },
+    { common: 18, rare: 36, epic: 32, legendary: 14 },
+    { common: 6, rare: 26, epic: 40, legendary: 28 },
+    { common: 0, rare: 16, epic: 42, legendary: 42 },
+  ],
+  elite: [
+    { common: 0, rare: 30, epic: 48, legendary: 22 },
+    { common: 0, rare: 14, epic: 50, legendary: 36 },
+    { common: 0, rare: 6, epic: 44, legendary: 50 },
+  ],
 };
 
-/** Weight multiplier for cards that only exist at a high rarity. */
-const SCARCITY: Record<'normal' | 'elite', Record<Rarity, number>> = {
-  normal: { common: 1, rare: 1, epic: 0.55, legendary: 0.3 },
-  elite: { common: 0.6, rare: 1, epic: 1.4, legendary: 1.4 },
+/** Weight multiplier for cards that only exist at one high rarity, by luck level. */
+const SCARCITY_LADDER: Record<'normal' | 'elite', Record<Rarity, number>[]> = {
+  normal: [
+    { common: 1, rare: 1, epic: 0.55, legendary: 0.3 },
+    { common: 0.6, rare: 0.85, epic: 1.1, legendary: 0.9 },
+    { common: 0.4, rare: 0.7, epic: 1.4, legendary: 1.3 },
+    { common: 0.3, rare: 0.6, epic: 1.6, legendary: 1.6 },
+  ],
+  elite: [
+    { common: 0.6, rare: 1, epic: 1.4, legendary: 1.4 },
+    { common: 0.5, rare: 1, epic: 1.6, legendary: 1.8 },
+    { common: 0.4, rare: 1, epic: 1.7, legendary: 2.2 },
+  ],
 };
+
+function ladder<T>(steps: T[], luck: number): T {
+  return steps[Math.min(steps.length - 1, Math.max(0, luck))];
+}
 
 function takenCount(world: World, card: CardDef): number {
   if (card.grants) return world.owned(card.grants) ? 1 : 0;
@@ -490,40 +667,71 @@ function takenCount(world: World, card: CardDef): number {
   return world.owned(card.weapon)?.stacks.get(card.id) ?? 0;
 }
 
-export function availableCards(world: World): CardDef[] {
-  const loadout = new Set(world.setup.loadout);
-  return ALL_CARDS.filter((card) => {
-    if (card.grants) return loadout.has(card.grants) && !world.owned(card.grants) && world.weaponSlotsFree;
-    if (card.max !== undefined && takenCount(world, card) >= card.max) return false;
-    if (card.weapon === null) return true;
-    const w = world.owned(card.weapon);
-    if (!w) return false;
-    return w.level >= (card.minLevel ?? 1);
-  });
+function upgradesTaken(world: World, weapon: WeaponId): number {
+  const w = world.owned(weapon);
+  if (!w) return 0;
+  let n = 0;
+  for (const v of w.stacks.values()) n += v;
+  return n;
 }
 
-export function rollCards(world: World, elite: boolean, count = 3): OfferedCard[] {
+/** Whether a card can still be offered (and applied) right now. */
+export function cardAvailable(world: World, card: CardDef): boolean {
+  if (card.grants) return new Set(world.setup.loadout).has(card.grants) && !world.owned(card.grants) && world.weaponSlotsFree;
+  if (card.max !== undefined && takenCount(world, card) >= card.max) return false;
+  if (card.when && !card.when(world)) return false;
+  if (card.weapon === null) return true;
+  const w = world.owned(card.weapon);
+  if (!w) return false;
+  if (card.evo) return !!world.owned(card.evo.partner) && upgradesTaken(world, card.weapon) >= card.evo.picks;
+  return w.level >= (card.minLevel ?? 1);
+}
+
+export function availableCards(world: World): CardDef[] {
+  return ALL_CARDS.filter((card) => cardAvailable(world, card));
+}
+
+/** Used by take-all: an earlier card in the same offer may have used the last slot. */
+export function canApply(world: World, offered: OfferedCard): boolean {
+  return cardAvailable(world, offered.def);
+}
+
+/**
+ * Three distinct cards. `luck` 0 = fresh chest; each reroll raises it and
+ * shifts the odds toward epic and legendary.
+ */
+export function rollCards(world: World, elite: boolean, luck = 0, count = 3): OfferedCard[] {
   const mode = elite ? 'elite' : 'normal';
+  const rarityWeights = ladder(RARITY_LADDER[mode], luck);
+  const scarcity = ladder(SCARCITY_LADDER[mode], luck);
   const pool = availableCards(world);
   const out: OfferedCard[] = [];
   while (out.length < count && pool.length > 0) {
     const card = world.rng.weighted(pool, (c) => {
       const tiers = Object.keys(c.tiers) as Rarity[];
-      const scarcity = tiers.length === 1 ? SCARCITY[mode][tiers[0]] : 1;
-      return (c.weight ?? (c.weapon === null ? 0.7 : 1)) * scarcity;
+      const scale = tiers.length === 1 ? scarcity[tiers[0]] : 1;
+      return (c.weight ?? (c.weapon === null ? 0.7 : 1)) * scale;
     });
     pool.splice(pool.indexOf(card), 1);
-    const tiers = Object.keys(card.tiers) as Rarity[];
-    let rarity = tiers[0];
-    if (tiers.length > 1) {
-      const weights = RARITY_WEIGHT[mode];
-      // If the rarity table rules out every tier (elite + common-only), fall back to the best tier.
-      const usable = tiers.filter((t) => weights[t] > 0);
-      rarity = usable.length ? world.rng.weighted(usable, (t) => weights[t]) : tiers[tiers.length - 1];
-    }
-    out.push({ def: card, rarity, value: card.tiers[rarity]! });
+    out.push(withRarity(world, card, rarityWeights));
+  }
+  // Gold chests sometimes slip a devil's bargain in as the last card.
+  if (elite && out.length === count && world.rng.chance(0.35)) {
+    const bargains = BARGAINS.filter((b) => cardAvailable(world, b));
+    if (bargains.length) out[count - 1] = withRarity(world, world.rng.pick(bargains), rarityWeights);
   }
   return out;
+}
+
+function withRarity(world: World, card: CardDef, weights: Record<Rarity, number>): OfferedCard {
+  const tiers = Object.keys(card.tiers) as Rarity[];
+  let rarity = tiers[0];
+  if (tiers.length > 1) {
+    // If the odds rule out every tier (elite + common-only), fall back to the best tier.
+    const usable = tiers.filter((t) => weights[t] > 0);
+    rarity = usable.length ? world.rng.weighted(usable, (t) => weights[t]) : tiers[tiers.length - 1];
+  }
+  return { def: card, rarity, value: card.tiers[rarity]! };
 }
 
 export function applyCard(world: World, offered: OfferedCard): void {

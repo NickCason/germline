@@ -53,13 +53,24 @@ export function playOut(world: World): World {
   const limit = 20 * 60;
   while (world.time < limit) {
     if (world.state === 'picking' && world.offer) {
+      // Gold chests: take everything while the take-alls last.
+      if (world.offerElite && world.takeAlls > 0) {
+        world.takeAll();
+        continue;
+      }
       let best = 0;
       world.offer.forEach((c, i) => {
         if (scoreCard(world, c) > scoreCard(world, world.offer![best])) best = i;
       });
+      // A weak offer is worth a reroll while they last (keep a couple in reserve).
+      if (scoreCard(world, world.offer[best]) < 6 && world.rerolls > 2 && world.offerRerolls < 2) {
+        world.reroll();
+        continue;
+      }
       world.choose(best);
       continue;
     }
+    if (world.state === 'playing' && world.ultReady) world.useUlt();
     if (world.state === 'revive') {
       world.revive();
       continue;

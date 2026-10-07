@@ -5,7 +5,19 @@ import type { ThemeId } from '../game/stage';
 import { PALETTES } from '../game/themes';
 import type { Projectile, Zone } from '../game/types';
 import type { World } from '../game/world';
-import { drawSprite, INK, ThemeSprites } from './sprites';
+import type { PowerKind } from '../game/chain';
+import type { CostumeId } from '../game/costumes';
+import { iconCanvas, type IconId } from './icons';
+import { drawSprite, heroSprite, INK, ThemeSprites, type Sprite } from './sprites';
+
+const POWER_STYLE: Record<PowerKind, { icon: IconId; color: string }> = {
+  freeze: { icon: 'g_slow', color: '#9fe7ff' },
+  reverse: { icon: 'p_reverse', color: '#c9a2ff' },
+  bomb: { icon: 'p_bomb', color: '#ff6b4a' },
+  lightning: { icon: 'g_cd', color: '#ffd34d' },
+  rapid: { icon: 'p_rapid', color: '#7cc8ff' },
+  coins: { icon: 'coin', color: '#ffc93c' },
+};
 
 const RING_OFFSETS = [-32, -16, 0, 16, 32];
 const LABEL_FONT = '600 17px "Fredoka Variable", ui-rounded, system-ui, sans-serif';
@@ -38,6 +50,9 @@ export class Renderer {
   private backdropFor: World | null = null;
   private numbers = true;
   private readonly tmp = { x: 0, y: 0, a: 0 };
+  private heroSprites = new Map<string, Sprite>();
+  /** Contiguous stretches of train this frame, as [startS, endS] pairs. */
+  private groups: number[] = [];
 
   constructor(canvas: HTMLCanvasElement, under: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -91,8 +106,10 @@ export class Renderer {
     for (const z of world.zones) this.drawZone(z, world.time);
     this.drawLasers(world);
     this.drawChain(world);
+    this.drawReticle(world);
     for (const p of world.projectiles) this.drawProjectile(p, world.time);
     this.drawClouds(world);
+    this.drawEffects(world);
     this.drawHero(world);
     this.drawFx(world);
   }
@@ -104,6 +121,16 @@ export class Renderer {
     if (key === this.spritesKey) return;
     this.sprites = new ThemeSprites(theme, k);
     this.spritesKey = key;
+    this.heroSprites.clear();
+  }
+
+  private hero(costume: CostumeId): Sprite {
+    let sp = this.heroSprites.get(costume);
+    if (!sp) {
+      sp = heroSprite(costume, this.dpr * this.scale);
+      this.heroSprites.set(costume, sp);
+    }
+    return sp;
   }
 
   /** Tissue floor, track groove and defence line, cached per run + size. */
@@ -237,6 +264,13 @@ export class Renderer {
         ctx.globalAlpha = 1;
       }
     }
+    // Frozen trains go icy, reversing ones glow violet.
+    if (world.frozen > 0 || world.reversing > 0) {
+      const fade = Math.min(1, (world.frozen > 0 ? world.frozen : world.reversing) / 0.5);
+      ctx.strokeStyle = world.frozen > 0 ? `rgba(190,235,255,${(0.5 * fade).toFixed(3)})` : `rgba(190,150,255,${(0.4 * fade).toFixed(3)})`;
+      ctx.lineWidth = SEG_RADIUS * 2;
+      this.strokeGroups(world, 2);
+    }
     // Chests and HP labels on top of the body.
     ctx.font = LABEL_FONT;
     ctx.textAlign = 'center';
@@ -246,6 +280,7 @@ export class Renderer {
       const seg = segs[i];
       if (!seg.visible) continue;
       if (seg.kind !== 'normal') this.drawChest(seg, world.time);
+      if (seg.power) this.drawPower(seg, world.time);
       const label = hpLabel(seg);
       ctx.lineWidth = 4;
       ctx.strokeStyle = INK;
@@ -263,9 +298,8 @@ export class Renderer {
   private drawSilhouette(world: World): void {
     const ctx = this.ctx;
     const segs = world.chain.segs;
-    const path = world.chain.path;
-    const tmp = this.tmp;
     const groups: number[] = [];
+    this.groups = groups;
     let start = NaN;
     let end = NaN;
     for (let i = segs.length - 1; i >= 0; i--) {
@@ -284,30 +318,105 @@ export class Renderer {
     }
     if (!Number.isNaN(start)) groups.push(start, end);
     if (!groups.length) return;
-    const stroke = (dy: number) => {
-      ctx.beginPath();
-      for (let g = 0; g < groups.length; g += 2) {
-        const a = groups[g];
-        const b = groups[g + 1];
-        path.pos(a, tmp);
-        ctx.moveTo(tmp.x, tmp.y + dy);
-        for (let s = a + 8; s < b; s += 8) {
-          path.pos(s, tmp);
-          ctx.lineTo(tmp.x, tmp.y + dy);
-        }
-        path.pos(b, tmp);
-        ctx.lineTo(tmp.x, tmp.y + dy);
-      }
-      ctx.stroke();
-    };
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     ctx.strokeStyle = 'rgba(0,0,0,0.22)';
     ctx.lineWidth = SEG_RADIUS * 2 + 4;
-    stroke(8);
+    this.strokeGroups(world, 8);
     ctx.strokeStyle = INK;
     ctx.lineWidth = SEG_RADIUS * 2 + 5.2;
-    stroke(2);
+    this.strokeGroups(world, 2);
+  }
+
+  /** Stroke the current stroke style along every stretch of train. */
+  private strokeGroups(world: World, dy: number): void {
+    const ctx = this.ctx;
+    const path = world.chain.path;
+    const tmp = this.tmp;
+    const groups = this.groups;
+    if (!groups.length) return;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    for (let g = 0; g < groups.length; g += 2) {
+      const a = groups[g];
+      const b = groups[g + 1];
+      path.pos(a, tmp);
+      ctx.moveTo(tmp.x, tmp.y + dy);
+      for (let s = a + 8; s < b; s += 8) {
+        path.pos(s, tmp);
+        ctx.lineTo(tmp.x, tmp.y + dy);
+      }
+      path.pos(b, tmp);
+      ctx.lineTo(tmp.x, tmp.y + dy);
+    }
+    ctx.stroke();
+  }
+
+  /** A lit power-up: coloured halo, its icon, and a ring that runs down as it fades. */
+  private drawPower(seg: Segment, time: number): void {
+    const ctx = this.ctx;
+    const style = POWER_STYLE[seg.power!];
+    const pulse = 0.75 + 0.25 * Math.sin(time * 9 + seg.id);
+    const blink = seg.powerLife < 3 && Math.sin(time * 18) < 0;
+    ctx.globalAlpha = 0.45 * pulse;
+    ctx.fillStyle = style.color;
+    ctx.beginPath();
+    ctx.arc(seg.x, seg.y, SEG_RADIUS + 10, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = style.color;
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.arc(seg.x, seg.y, SEG_RADIUS + 8, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * (seg.powerLife / 12));
+    ctx.stroke();
+    if (!blink) ctx.drawImage(iconCanvas(style.icon, 64), seg.x - 17, seg.y - 50, 34, 34);
+  }
+
+  /** Manual aim: crosshair on the finger or the locked segment. */
+  private drawReticle(world: World): void {
+    if (world.aimMode !== 'manual') return;
+    const p = world.aim.point ?? (world.aim.lock?.alive ? { x: world.aim.lock.x, y: world.aim.lock.y } : null);
+    if (!p) return;
+    const ctx = this.ctx;
+    const r = 26 + Math.sin(world.time * 8) * 3;
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.rotate(world.time * 1.5);
+    ctx.lineCap = 'round';
+    for (const [w, c] of [
+      [7, INK],
+      [3.5, '#ff5b6e'],
+    ] as const) {
+      ctx.lineWidth = w;
+      ctx.strokeStyle = c;
+      for (let i = 0; i < 4; i++) {
+        ctx.beginPath();
+        ctx.arc(0, 0, r, (i * Math.PI) / 2 + 0.25, ((i + 1) * Math.PI) / 2 - 0.25);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
+  private drawEffects(world: World): void {
+    const ctx = this.ctx;
+    for (const e of world.effects) {
+      if (e.kind === 'laser') {
+        const x = e.a;
+        const fade = Math.min(1, (e.dur - e.t) / 0.3, e.t / 0.15);
+        ctx.globalAlpha = 0.35 * fade;
+        ctx.fillStyle = '#ff5bd1';
+        ctx.fillRect(x - 46, -200, 92, FIELD_H + 400);
+        ctx.globalAlpha = 0.85 * fade;
+        ctx.fillStyle = '#ffd6f4';
+        ctx.fillRect(x - 14, -200, 28, FIELD_H + 400);
+        ctx.globalAlpha = fade;
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(x - 4, -200, 8, FIELD_H + 400);
+        ctx.globalAlpha = 1;
+      }
+    }
   }
 
   private drawChest(seg: Segment, time: number): void {
@@ -599,6 +708,40 @@ export class Renderer {
         ctx.stroke();
         break;
       }
+      case 'syringe': {
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.rotate(p.rot);
+        ctx.strokeStyle = INK;
+        ctx.lineWidth = 2;
+        ctx.fillStyle = '#9fd8ff';
+        ctx.beginPath();
+        ctx.roundRect(-16, -5, 22, 10, 3);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(-21, -3, 5, 6);
+        ctx.beginPath();
+        ctx.moveTo(6, 0);
+        ctx.lineTo(18, 0);
+        ctx.stroke();
+        ctx.restore();
+        break;
+      }
+      case 'cannon': {
+        ctx.fillStyle = '#2b2440';
+        ctx.strokeStyle = INK;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = 'rgba(255,255,255,0.55)';
+        ctx.beginPath();
+        ctx.arc(p.x - p.r * 0.35, p.y - p.r * 0.35, p.r * 0.3, 0, Math.PI * 2);
+        ctx.fill();
+        break;
+      }
       case 'roller': {
         ctx.save();
         ctx.translate(p.x, p.y);
@@ -648,16 +791,38 @@ export class Renderer {
   private drawHero(world: World): void {
     const ctx = this.ctx;
     const h = world.hero;
+    const costume = world.costume.id;
+    const sprite = this.hero(costume);
     const bob = Math.sin(world.time * 5) * 1.5;
+    // Shadow clones (ninja ultimate) flank the hero, translucent.
+    for (const e of world.effects) {
+      if (e.kind !== 'clones') continue;
+      const fade = Math.min(1, (e.dur - e.t) / 0.4, e.t / 0.2);
+      ctx.globalAlpha = 0.45 * fade;
+      for (const side of [-1, 1]) {
+        const cx = Math.min(FIELD_W - 20, Math.max(20, h.x + side * 78));
+        drawSprite(ctx, sprite, cx, h.y + 6 + Math.sin(world.time * 5 + side) * 1.5);
+      }
+      ctx.globalAlpha = 1;
+    }
+    if (world.rapid > 0) {
+      // rapid-fire aura
+      ctx.globalAlpha = 0.25 + 0.15 * Math.sin(world.time * 20);
+      ctx.fillStyle = '#9fd8ff';
+      ctx.beginPath();
+      ctx.arc(h.x, h.y + bob, 40, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
     const kick = h.recoil * 4;
     const x = h.x - Math.cos(h.aim) * kick;
     const y = h.y + bob - Math.sin(h.aim) * kick;
-    drawSprite(ctx, this.sprites!.hero, x, y);
-    // pupils follow the aim
+    drawSprite(ctx, sprite, x, y);
+    // pupils follow the aim (the pirate's right eye is under the patch)
     ctx.fillStyle = INK;
     const px = Math.cos(h.aim) * 3;
     const py = Math.sin(h.aim) * 3;
-    for (const ex of [-9, 9]) {
+    for (const ex of costume === 'pirate' ? [-9] : [-9, 9]) {
       ctx.beginPath();
       ctx.arc(x + ex + px, y - 4 + py, 3.4, 0, Math.PI * 2);
       ctx.fill();

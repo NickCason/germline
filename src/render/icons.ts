@@ -1,4 +1,5 @@
-import { heartPath, INK } from './sprites';
+import type { CostumeId } from '../game/costumes';
+import { drawHeroBody, heartPath, INK } from './sprites';
 
 /**
  * Hand-drawn (well, code-drawn) icons for weapons, cards and currencies,
@@ -29,28 +30,72 @@ export type IconId =
   | 'lock'
   | 'heart'
   | 'virus'
-  | 'gear';
+  | 'gear'
+  | 'p_reverse'
+  | 'p_bomb'
+  | 'p_rapid'
+  | 'crosshair'
+  | 'auto'
+  | 'music'
+  | 'speaker';
 
 type Draw = (g: CanvasRenderingContext2D) => void;
 
 const cache = new Map<string, string>();
+const canvases = new Map<string, HTMLCanvasElement>();
+
+function render(key: string, px: number, draw: Draw, box = 64): HTMLCanvasElement {
+  let c = canvases.get(key);
+  if (!c) {
+    c = document.createElement('canvas');
+    c.width = c.height = px;
+    const g = c.getContext('2d')!;
+    g.scale(px / box, px / box);
+    g.translate(box / 2, box / 2);
+    g.lineJoin = 'round';
+    g.lineCap = 'round';
+    draw(g);
+    canvases.set(key, c);
+  }
+  return c;
+}
+
+/** The icon as a canvas, for drawing inside the game canvas. */
+export function iconCanvas(id: IconId, px = 64): HTMLCanvasElement {
+  return render(`${id}@${px}`, px, DRAW[id]);
+}
 
 export function iconUrl(id: IconId, px = 96): string {
   const key = `${id}@${px}`;
   let url = cache.get(key);
   if (!url) {
-    const c = document.createElement('canvas');
-    c.width = c.height = px;
-    const g = c.getContext('2d')!;
-    g.scale(px / 64, px / 64);
-    g.translate(32, 32);
-    g.lineJoin = 'round';
-    g.lineCap = 'round';
-    DRAW[id](g);
-    url = c.toDataURL('image/png');
+    url = iconCanvas(id, px).toDataURL('image/png');
     cache.set(key, url);
   }
   return url;
+}
+
+/** Portrait of the hero in a costume (with pupils), for menus and the HUD. */
+export function costumeUrl(id: CostumeId, px = 128): string {
+  const key = `costume:${id}@${px}`;
+  let url = cache.get(key);
+  if (!url) {
+    url = render(key, px, (g) => {
+      g.translate(0, 10);
+      drawHeroBody(g, id, true);
+    }, 110).toDataURL('image/png');
+    cache.set(key, url);
+  }
+  return url;
+}
+
+export function costumeImg(id: CostumeId, cls = 'icon'): HTMLImageElement {
+  const img = new Image();
+  img.src = costumeUrl(id);
+  img.alt = '';
+  img.className = cls;
+  img.draggable = false;
+  return img;
 }
 
 export function iconImg(id: IconId, cls = 'icon'): HTMLImageElement {
@@ -451,6 +496,132 @@ const DRAW: Record<IconId, Draw> = {
   heart: heartIcon,
   virus: virusIcon,
   gear: gearIcon,
+  p_reverse: (g) => {
+    g.lineWidth = 9;
+    g.strokeStyle = INK;
+    g.beginPath();
+    g.arc(0, 2, 18, Math.PI * 0.15, Math.PI * 1.55);
+    g.stroke();
+    g.lineWidth = 5;
+    g.strokeStyle = '#c9a2ff';
+    g.stroke();
+    g.fillStyle = '#c9a2ff';
+    g.beginPath();
+    g.moveTo(4, -24);
+    g.lineTo(22, -16);
+    g.lineTo(4, -4);
+    g.closePath();
+    g.fill();
+    outline(g, 2.5);
+  },
+  p_bomb: (g) => {
+    g.fillStyle = '#2b2440';
+    g.beginPath();
+    g.arc(-3, 6, 20, 0, Math.PI * 2);
+    g.fill();
+    outline(g);
+    g.fillStyle = 'rgba(255,255,255,0.5)';
+    g.beginPath();
+    g.ellipse(-10, -2, 6, 4, -0.6, 0, Math.PI * 2);
+    g.fill();
+    g.beginPath();
+    g.moveTo(10, -10);
+    g.quadraticCurveTo(18, -22, 26, -20);
+    outline(g, 3);
+    star(g, 26, -22, 8, 3.5, '#ffb347');
+  },
+  p_rapid: (g) => {
+    for (const dy of [-10, 10]) {
+      g.save();
+      g.translate(4, dy);
+      pill(g, 34, 14, '#7cc8ff', '#ffffff');
+      g.restore();
+    }
+    g.strokeStyle = INK;
+    g.lineWidth = 3;
+    for (const y of [-14, 0, 14]) {
+      g.beginPath();
+      g.moveTo(-30, y);
+      g.lineTo(-20, y);
+      g.stroke();
+    }
+  },
+  crosshair: (g) => {
+    g.lineWidth = 6;
+    g.strokeStyle = INK;
+    g.beginPath();
+    g.arc(0, 0, 18, 0, Math.PI * 2);
+    g.moveTo(0, -28);
+    g.lineTo(0, -10);
+    g.moveTo(0, 10);
+    g.lineTo(0, 28);
+    g.moveTo(-28, 0);
+    g.lineTo(-10, 0);
+    g.moveTo(10, 0);
+    g.lineTo(28, 0);
+    g.stroke();
+    g.lineWidth = 3;
+    g.strokeStyle = '#ff5b6e';
+    g.stroke();
+    g.fillStyle = '#ff5b6e';
+    g.beginPath();
+    g.arc(0, 0, 4, 0, Math.PI * 2);
+    g.fill();
+  },
+  auto: (g) => {
+    g.lineWidth = 6;
+    g.strokeStyle = INK;
+    g.beginPath();
+    g.arc(0, 0, 18, 0, Math.PI * 2);
+    g.stroke();
+    g.lineWidth = 3;
+    g.strokeStyle = '#78d356';
+    g.stroke();
+    g.fillStyle = INK;
+    g.font = '700 20px sans-serif';
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.fillText('A', 0, 1);
+  },
+  music: (g) => {
+    g.fillStyle = '#b8f04a';
+    g.beginPath();
+    g.ellipse(-10, 16, 9, 7, -0.4, 0, Math.PI * 2);
+    g.fill();
+    outline(g);
+    g.beginPath();
+    g.ellipse(16, 10, 9, 7, -0.4, 0, Math.PI * 2);
+    g.fill();
+    outline(g);
+    g.lineWidth = 5;
+    g.strokeStyle = INK;
+    g.beginPath();
+    g.moveTo(-2, 14);
+    g.lineTo(-2, -20);
+    g.lineTo(24, -26);
+    g.lineTo(24, 8);
+    g.stroke();
+  },
+  speaker: (g) => {
+    g.fillStyle = '#eaf6f4';
+    g.beginPath();
+    g.moveTo(-24, -8);
+    g.lineTo(-12, -8);
+    g.lineTo(2, -20);
+    g.lineTo(2, 20);
+    g.lineTo(-12, 8);
+    g.lineTo(-24, 8);
+    g.closePath();
+    g.fill();
+    outline(g);
+    g.lineWidth = 4;
+    g.strokeStyle = INK;
+    for (const r of [10, 20]) {
+      g.beginPath();
+      g.arc(4, 0, r, -0.8, 0.8);
+      g.stroke();
+    }
+  },
   chest: (g) => chestIcon(g, false),
   chestOpen: (g) => chestIcon(g, true),
   lock: (g) => {

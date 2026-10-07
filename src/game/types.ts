@@ -1,4 +1,17 @@
 import type { Segment } from './chain';
+
+export type AimMode = 'auto' | 'manual';
+
+/** A temporary run-wide effect (ultimates); return false when finished. */
+export interface TimedEffect {
+  kind: 'laser' | 'clones' | 'barrage' | 'rain' | 'pulse' | 'decree';
+  t: number;
+  dur: number;
+  /** Free-form state for the effect (sweep position, shot timers). */
+  a: number;
+  b: number;
+  step(world: World, e: TimedEffect, dt: number): boolean;
+}
 import type { World } from './world';
 
 export type WeaponId =
@@ -85,7 +98,9 @@ export type ProjKind =
   | 'swab'
   | 'scalpel'
   | 'meteor'
-  | 'roller';
+  | 'roller'
+  | 'syringe'
+  | 'cannon';
 
 export interface Projectile {
   kind: ProjKind;

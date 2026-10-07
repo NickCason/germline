@@ -21,6 +21,8 @@ export interface StageDef {
   hpScale: number;
   /** Multiplier on coins per kill and clear bonus. */
   coinMult: number;
+  /** Endless mode: the train keeps coming until it breaks through. */
+  endless?: boolean;
 }
 
 const VIRUS_NAMES = [
@@ -57,7 +59,7 @@ const VIRUS_NAMES = [
 ];
 
 /** Per-chapter HP growth; hard mode multiplies on top. */
-export const HP_GROWTH = 1.6;
+export const HP_GROWTH = 1.65;
 export const HARD_HP = 4;
 /** Per-chapter coin growth; slightly behind HP growth so later chapters take a few more runs. */
 export const COIN_GROWTH = 1.35;
@@ -89,14 +91,15 @@ function layoutFor(chapter: number): LayoutKind {
 
 /** HP of the i-th segment before stage scaling: soft at the head, brutal at the tail. */
 export function baseSegmentHp(i: number): number {
-  return 10 + 6.7 * Math.pow(i, 1.6);
+  return 10 + 20 * Math.pow(i, 1.6);
 }
 
-export function segmentSpecs(stage: StageDef, rng: Rng): SegmentSpec[] {
-  const specs: SegmentSpec[] = [];
+/** Endless supply of segment specs in train order: HP ramps up, chests every few segments. */
+export function specStream(stage: StageDef, rng: Rng): () => SegmentSpec {
+  let i = 0;
   let nextChest = 3;
   let nextElite = 15 + rng.int(0, 4);
-  for (let i = 0; i < stage.segments; i++) {
+  return () => {
     let kind: SegKind = 'normal';
     if (i === nextElite) {
       kind = 'elite';
@@ -107,9 +110,39 @@ export function segmentSpecs(stage: StageDef, rng: Rng): SegmentSpec[] {
       nextChest += 5 + rng.int(0, 1);
     }
     const hp = Math.max(1, Math.round(baseSegmentHp(i) * stage.hpScale * rng.range(0.92, 1.08)));
-    specs.push({ hp, kind });
-  }
-  return specs;
+    i++;
+    return { hp, kind };
+  };
+}
+
+export function segmentSpecs(stage: StageDef, rng: Rng): SegmentSpec[] {
+  const next = specStream(stage, rng);
+  const count = stage.endless ? ENDLESS_START : stage.segments;
+  return Array.from({ length: count }, next);
+}
+
+/** Endless runs start with this many segments queued and keep feeding more. */
+export const ENDLESS_START = 40;
+
+/**
+ * Endless mode: a train that never ends. Toughness tracks your campaign
+ * progress so it opens with a fight instead of a warm-up.
+ */
+export function endlessDef(maxChapter: number, seed: number): StageDef {
+  const layouts: LayoutKind[] = ['rows', 'columns', 'spiral'];
+  const level = Math.max(0, maxChapter - 3);
+  return {
+    chapter: maxChapter,
+    difficulty: 'normal',
+    name: 'Endless Mutation',
+    theme: THEME_CYCLE[seed % THEME_CYCLE.length],
+    layout: layouts[seed % layouts.length],
+    segments: Infinity,
+    crossTime: 104,
+    hpScale: Math.pow(HP_GROWTH, level),
+    coinMult: Math.pow(COIN_GROWTH, level) * 0.6,
+    endless: true,
+  };
 }
 
 function roman(n: number): string {

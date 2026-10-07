@@ -1,14 +1,16 @@
 import { fmt, pct } from '../core/format';
 import { SIM_DT } from '../game/constants';
-import type { WeaponId } from '../game/types';
+import { COSTUMES } from '../game/costumes';
+import type { AimMode, WeaponId } from '../game/types';
 import type { OfferedCard } from '../game/upgrades';
 import { WEAPONS } from '../game/weapons';
 import { World, type RunSetup } from '../game/world';
 import type { RunRewards } from '../meta/economy';
-import { iconImg, type IconId } from '../render/icons';
+import type { SaveData } from '../meta/save';
+import { costumeImg, iconImg, type IconId } from '../render/icons';
 import { Renderer } from '../render/renderer';
+import { audio } from './audio';
 import { h, modal } from './dom';
-import { sfx } from './sfx';
 
 const RARITY_NAME = { common: 'Common', rare: 'Rare', epic: 'Epic', legendary: 'Legendary' } as const;
 
@@ -17,14 +19,24 @@ export interface RunHooks {
   settle(world: World): RunRewards;
   /** Leave the run screen. */
   exit(): void;
-  showNumbers: boolean;
-  fast: boolean;
-  setFast(on: boolean): void;
+  /** Live settings object; the run screen edits it and calls persist(). */
+  settings: SaveData['settings'];
+  persist(): void;
+  /** Endless best score before this run. */
+  best: number;
 }
 
 function cardIcon(card: OfferedCard): IconId {
+  if (card.def.bargain) return 'p_bomb';
   if (card.def.weapon) return card.def.weapon;
   return card.def.id as IconId;
+}
+
+function cardTag(card: OfferedCard): string | null {
+  if (card.def.grants) return 'New weapon';
+  if (card.def.evo) return 'Evolution';
+  if (card.def.bargain) return "Devil's bargain";
+  return null;
 }
 
 /** One run: canvas, HUD, the game loop and the in-run modals. */
@@ -37,19 +49,22 @@ export class RunScreen {
   private readonly under: HTMLCanvasElement;
   private readonly hudTop: HTMLDivElement;
   private readonly hudBottom: HTMLDivElement;
+  private readonly slots: HTMLDivElement;
   private readonly liquid: HTMLDivElement;
   private readonly pctEl: HTMLDivElement;
   private readonly speedBtn: HTMLButtonElement;
+  private readonly aimBtn: HTMLButtonElement;
+  private readonly ultBtn: HTMLButtonElement;
   private raf = 0;
   private last = 0;
   private acc = 0;
   private paused = false;
-  private fast: boolean;
   private overlay: { close: () => void } | null = null;
   private shownState: string = 'playing';
   private endTimer = 0;
   private slotKey = '';
-  private lastPct = -1;
+  private hudKey = '';
+  private ultKey = '';
   /** `?perf` in the URL shows frame cost, for checking on a real phone. */
   private readonly perfEl: HTMLDivElement | null = new URLSearchParams(location.search).has('perf')
     ? h('div', { class: 'perf num' })
@@ -64,14 +79,20 @@ export class RunScreen {
 
   constructor(parent: Element, setup: RunSetup, hooks: RunHooks) {
     this.hooks = hooks;
-    this.fast = hooks.fast;
     this.world = new World(setup);
     this.canvas = h('canvas');
     this.under = h('canvas');
     const stage = this.world.stage;
+    const settings = hooks.settings;
     this.liquid = h('div', { class: 'liquid' });
     this.pctEl = h('div', { class: 'pct num', text: '0%' });
-    this.speedBtn = h('button', { class: `round-btn speed${this.fast ? ' on' : ''}`, text: this.fast ? '2×' : '1×', ariaLabel: 'Game speed', onclick: () => this.toggleSpeed() });
+    this.speedBtn = h('button', { class: 'round-btn speed', ariaLabel: 'Game speed', onclick: () => this.toggleSpeed() });
+    this.aimBtn = h('button', { class: 'round-btn aim', ariaLabel: 'Aim mode', onclick: () => this.toggleAim() });
+    this.ultBtn = h(
+      'button',
+      { class: 'ult', ariaLabel: this.world.costume.ultName, title: `${this.world.costume.ultName}: ${this.world.costume.ultDesc}`, onclick: () => this.fireUlt() },
+      costumeImg(this.world.costume.id),
+    );
     this.hudTop = h(
       'div',
       { class: 'hud-top' },
@@ -79,8 +100,11 @@ export class RunScreen {
       h(
         'div',
         { class: 'hud-title' },
-        h('div', { class: 'name', text: `${stage.chapter}. ${stage.name}` }),
-        h('div', { class: `diff${stage.difficulty === 'hard' ? ' hard' : ''}`, text: stage.difficulty === 'hard' ? 'Hard' : 'Normal' }),
+        h('div', { class: 'name', text: stage.endless ? stage.name : `${stage.chapter}. ${stage.name}` }),
+        h('div', {
+          class: `diff${stage.difficulty === 'hard' ? ' hard' : ''}`,
+          text: stage.endless ? `Best ${fmt(hooks.best)}` : stage.difficulty === 'hard' ? 'Hard' : 'Normal',
+        }),
       ),
       this.speedBtn,
       h(
@@ -93,17 +117,23 @@ export class RunScreen {
         h('div', { class: 'tip' }),
       ),
     );
-    this.hudBottom = h('div', { class: 'hud-bottom' });
+    this.slots = h('div', { class: 'slots' });
+    this.hudBottom = h('div', { class: 'hud-bottom' }, this.aimBtn, this.slots, this.ultBtn);
     this.el = h('div', { class: 'run' }, this.under, this.canvas, this.hudTop, this.hudBottom, this.perfEl);
     parent.append(this.el);
 
+    // `?debug` exposes the live world for browser automation and poking around.
     this.renderer = new Renderer(this.canvas, this.under);
-    this.renderer.setShowNumbers(hooks.showNumbers);
+    if (new URLSearchParams(location.search).has('debug')) Object.assign(window, { __world: this.world, __renderer: this.renderer });
+    this.renderer.setShowNumbers(settings.numbers);
+    this.syncSpeed();
+    this.syncAim();
     this.bindInput();
     window.addEventListener('resize', this.onResize);
     document.addEventListener('visibilitychange', this.onVisibility);
     this.updateSlots();
     this.layout();
+    audio.music('battle');
     this.last = performance.now();
     this.raf = requestAnimationFrame(this.frame);
   }
@@ -113,6 +143,7 @@ export class RunScreen {
     clearTimeout(this.endTimer);
     window.removeEventListener('resize', this.onResize);
     document.removeEventListener('visibilitychange', this.onVisibility);
+    audio.intensity = 0;
     this.el.remove();
   }
 
@@ -125,23 +156,25 @@ export class RunScreen {
   private bindInput(): void {
     const c = this.canvas;
     let active: number | null = null;
-    const move = (e: PointerEvent) => {
-      if (active !== e.pointerId || !this.world.hero.mobile) return;
-      this.world.hero.pointerX = this.renderer.toField(e.clientX, e.clientY).x;
+    const send = (e: PointerEvent, phase: 'down' | 'move' | 'up') => {
+      const p = this.renderer.toField(e.clientX, e.clientY);
+      this.world.pointer(p.x, p.y, phase);
     };
     c.addEventListener('pointerdown', (e) => {
-      sfx.unlock();
+      audio.unlock();
       // iOS fills in safe-area insets late in standalone mode; re-measure on first touch.
       this.layout();
       active = e.pointerId;
       c.setPointerCapture(e.pointerId);
-      move(e);
+      send(e, 'down');
     });
-    c.addEventListener('pointermove', move);
+    c.addEventListener('pointermove', (e) => {
+      if (active === e.pointerId) send(e, 'move');
+    });
     const up = (e: PointerEvent) => {
       if (active !== e.pointerId) return;
       active = null;
-      this.world.hero.pointerX = null;
+      send(e, 'up');
     };
     c.addEventListener('pointerup', up);
     c.addEventListener('pointercancel', up);
@@ -153,7 +186,7 @@ export class RunScreen {
     this.last = now;
     const w = this.world;
     if (!this.paused && w.state === 'playing') {
-      this.acc += dt * (this.fast ? 2 : 1);
+      this.acc += dt * (this.hooks.settings.fast ? 2 : 1);
       let steps = 0;
       while (this.acc >= SIM_DT && steps < 12) {
         w.step(SIM_DT);
@@ -166,6 +199,7 @@ export class RunScreen {
       // keep effects animating on the end screen
       w.fx.update(dt);
     }
+    audio.intensity = w.chain.danger;
     this.drainEvents();
     this.syncState();
     this.renderer.render(w);
@@ -194,22 +228,31 @@ export class RunScreen {
     for (const e of this.world.events) {
       switch (e.type) {
         case 'kill':
-          sfx.play('pop');
+          audio.play('pop');
           break;
         case 'chest':
-          sfx.play(e.elite ? 'elite' : 'chest');
+          audio.play(e.elite ? 'elite' : 'chest');
           break;
         case 'boom':
-          sfx.play('boom');
+          audio.play('boom');
           break;
         case 'revive':
-          sfx.play('revive');
+          audio.play('revive');
+          break;
+        case 'power':
+          audio.play('power');
+          break;
+        case 'power-spawn':
+          audio.play('spawn');
+          break;
+        case 'ult':
+          audio.play('ult');
           break;
         case 'won':
-          sfx.play('win');
+          audio.play('win');
           break;
         case 'lost':
-          sfx.play('lose');
+          audio.play('lose');
           break;
         case 'offer':
           break;
@@ -232,11 +275,30 @@ export class RunScreen {
   }
 
   private updateHud(): void {
-    const p = Math.floor(this.world.progress * 100);
-    if (p !== this.lastPct) {
-      this.lastPct = p;
-      this.liquid.style.width = `${p}%`;
-      this.pctEl.textContent = `${p}%`;
+    const w = this.world;
+    if (w.stage.endless) {
+      const key = `e${w.score}`;
+      if (key !== this.hudKey) {
+        this.hudKey = key;
+        // Fill toward your best: the syringe tops out when you beat it.
+        this.liquid.style.width = `${Math.min(100, (w.score / Math.max(this.hooks.best, 40)) * 100)}%`;
+        this.pctEl.textContent = w.score > this.hooks.best && this.hooks.best > 0 ? `${w.score} new best!` : `${w.score} destroyed`;
+      }
+    } else {
+      const p = Math.floor(w.progress * 100);
+      const key = `p${p}`;
+      if (key !== this.hudKey) {
+        this.hudKey = key;
+        this.liquid.style.width = `${p}%`;
+        this.pctEl.textContent = `${p}%`;
+      }
+    }
+    const charge = Math.floor((w.ultCharge / w.ultNeed) * 100);
+    const ultKey = `${charge}`;
+    if (ultKey !== this.ultKey) {
+      this.ultKey = ultKey;
+      this.ultBtn.style.setProperty('--charge', `${charge}%`);
+      this.ultBtn.classList.toggle('ready', w.ultReady);
     }
   }
 
@@ -244,15 +306,41 @@ export class RunScreen {
     const key = this.world.weapons.map((w) => w.def.id).join(',');
     if (key === this.slotKey) return;
     this.slotKey = key;
-    this.hudBottom.replaceChildren(...this.world.weapons.map((w) => h('div', { class: 'slot', title: w.def.name }, iconImg(w.def.id))));
+    this.slots.replaceChildren(...this.world.weapons.map((w) => h('div', { class: 'slot', title: w.def.name }, iconImg(w.def.id))));
   }
 
   private toggleSpeed(): void {
-    sfx.play('tap');
-    this.fast = !this.fast;
-    this.hooks.setFast(this.fast);
-    this.speedBtn.textContent = this.fast ? '2×' : '1×';
-    this.speedBtn.classList.toggle('on', this.fast);
+    audio.play('tap');
+    this.hooks.settings.fast = !this.hooks.settings.fast;
+    this.hooks.persist();
+    this.syncSpeed();
+  }
+
+  private syncSpeed(): void {
+    const fast = this.hooks.settings.fast;
+    this.speedBtn.textContent = fast ? '2×' : '1×';
+    this.speedBtn.classList.toggle('on', fast);
+  }
+
+  private toggleAim(mode?: AimMode): void {
+    audio.play('tap');
+    const next = mode ?? (this.world.aimMode === 'auto' ? 'manual' : 'auto');
+    this.world.setAimMode(next);
+    this.hooks.settings.aim = next;
+    this.hooks.persist();
+    this.syncAim();
+  }
+
+  private syncAim(): void {
+    const manual = this.world.aimMode === 'manual';
+    this.aimBtn.replaceChildren(iconImg(manual ? 'crosshair' : 'auto'));
+    this.aimBtn.classList.toggle('on', manual);
+    this.aimBtn.title = manual ? 'Aim: touch the train to target it' : 'Aim: auto-tracks the front';
+  }
+
+  private fireUlt(): void {
+    audio.unlock();
+    if (this.world.useUlt()) this.ultKey = '';
   }
 
   // ---------------------------------------------------------------- modals
@@ -261,64 +349,83 @@ export class RunScreen {
     const w = this.world;
     const offer = w.offer;
     if (!offer) return;
-    sfx.play('pick');
+    audio.play('pick');
     const cards = h(
       'div',
       { class: 'cards' },
-      ...offer.map((card, i) =>
-        h(
+      ...offer.map((card, i) => {
+        const tag = cardTag(card);
+        return h(
           'button',
           {
-            class: `card ${card.rarity}`,
+            class: `card ${card.rarity}${card.def.evo ? ' evo' : ''}${card.def.bargain ? ' bargain' : ''}`,
             onclick: () => {
-              sfx.play('tap');
+              audio.play('tap');
               w.choose(i);
               this.shownState = '';
             },
           },
           h('div', { class: 'bubble' }, iconImg(cardIcon(card))),
-          card.def.grants ? h('div', { class: 'tag-new', text: 'New weapon' }) : null,
+          tag ? h('div', { class: 'tag-new', text: tag }) : null,
           h('div', { class: 'cname', text: card.def.name }),
           h('div', { class: 'cdesc', text: card.def.desc(card.value) }),
           h('div', { class: 'crarity', text: RARITY_NAME[card.rarity] }),
-        ),
-      ),
+        );
+      }),
     );
     const reroll = h('button', {
       class: 'pill ghost',
-      text: w.rerolls > 0 ? `Reroll (${w.rerolls} left)` : 'No rerolls left',
+      text: w.rerolls > 0 ? `Reroll (${w.rerolls})` : 'No rerolls',
       disabled: w.rerolls <= 0,
       onclick: () => {
         if (w.reroll()) {
-          sfx.play('tap');
+          audio.play('tap');
           this.overlay?.close();
           this.showPick();
         }
       },
     });
+    const takeAll = h('button', {
+      class: 'pill gold',
+      text: w.takeAlls > 0 ? `Take all 3 (${w.takeAlls})` : 'No take-alls',
+      disabled: w.takeAlls <= 0,
+      onclick: () => {
+        if (w.takeAll()) {
+          audio.play('elite');
+          this.shownState = '';
+        }
+      },
+    });
     const title = w.offerElite ? 'Golden chest: choose one' : 'Choose an upgrade';
-    this.overlay = modal(this.el, h('div', { class: 'banner', text: title }), cards, h('div', { class: 'row center', style: 'margin-top:18px' }, reroll));
+    const hint =
+      w.offerRerolls > 0
+        ? `Reroll ${w.offerRerolls}: rarer cards are more likely now`
+        : 'Each reroll makes rarer cards more likely';
+    this.overlay = modal(
+      this.el,
+      h('div', { class: 'banner', text: title }),
+      cards,
+      h('p', { class: 'pick-hint', text: hint }),
+      h('div', { class: 'row center pick-actions' }, reroll, takeAll),
+    );
   }
 
   private showRevive(): void {
     const w = this.world;
+    const body = w.stage.endless
+      ? `You destroyed ${w.score} segments. Revive to knock the train far back down the track.`
+      : `You cleared ${pct(w.progress)} of the train. Revive to knock it far back down the track.`;
     this.overlay = modal(
       this.el,
       h(
         'div',
         { class: 'panel' },
         h('h2', { text: 'The virus broke through!' }),
-        h('p', { text: `You cleared ${pct(w.progress)} of the train. Revive to knock it far back down the track.` }),
+        h('p', { text: body }),
         h(
           'div',
           { class: 'stack' },
-          h('button', {
-            class: 'pill red',
-            text: `Revive (${w.revives} left)`,
-            onclick: () => {
-              w.revive();
-            },
-          }),
+          h('button', { class: 'pill red', text: `Revive (${w.revives} left)`, onclick: () => w.revive() }),
           h('button', { class: 'pill ghost', text: 'Give up', onclick: () => w.giveUp() }),
         ),
       ),
@@ -328,22 +435,46 @@ export class RunScreen {
   private pause(): void {
     if (this.paused || this.world.state !== 'playing') return;
     this.paused = true;
+    const settings = this.hooks.settings;
     const resume = () => {
       this.paused = false;
       this.last = performance.now();
       this.overlay?.close();
       this.overlay = null;
     };
+    const toggle = (label: string, icon: IconId, get: () => boolean, set: (v: boolean) => void) => {
+      const input = h('input', { attrs: { type: 'checkbox' } });
+      input.checked = get();
+      input.addEventListener('change', () => {
+        set(input.checked);
+        this.hooks.persist();
+      });
+      return h('label', { class: 'toggle' }, h('span', { class: 'row' }, iconImg(icon), label), input);
+    };
+    const w = this.world;
     this.overlay = modal(
       this.el,
       h(
         'div',
         { class: 'panel' },
         h('h2', { text: 'Paused' }),
-        h('p', { text: `${pct(this.world.progress)} of the train cleared` }),
+        h('p', { text: w.stage.endless ? `${w.score} segments destroyed` : `${pct(w.progress)} of the train cleared` }),
+        toggle('Music', 'music', () => settings.music, (v) => {
+          settings.music = v;
+          audio.setMusic(v, settings.musicVol);
+        }),
+        toggle('Sound effects', 'speaker', () => settings.sfx, (v) => {
+          settings.sfx = v;
+          audio.setSfx(v, settings.sfxVol);
+        }),
+        toggle('Damage numbers', 'g_crit', () => settings.numbers, (v) => {
+          settings.numbers = v;
+          this.renderer.setShowNumbers(v);
+        }),
+        toggle('Manual aim: touch the train to target', 'crosshair', () => w.aimMode === 'manual', (v) => this.toggleAim(v ? 'manual' : 'auto')),
         h(
           'div',
-          { class: 'stack' },
+          { class: 'stack', style: 'margin-top:12px' },
           h('button', { class: 'pill', text: 'Resume', onclick: resume }),
           h('button', {
             class: 'pill ghost',
@@ -363,35 +494,47 @@ export class RunScreen {
   private showResults(): void {
     const w = this.world;
     const rewards = this.hooks.settle(w);
-    const total = w.weapons.reduce((a, x) => a + x.dealt, 0) || 1;
-    const top = [...w.weapons].sort((a, b) => b.dealt - a.dealt);
+    const rows: { icon: HTMLImageElement; dealt: number }[] = w.weapons.map((x) => ({ icon: iconImg(x.def.id), dealt: x.dealt }));
+    if (w.ultDealt > 0) rows.push({ icon: costumeImg(w.costume.id), dealt: w.ultDealt });
+    if (w.powerDealt > 0) rows.push({ icon: iconImg('p_bomb'), dealt: w.powerDealt });
+    rows.sort((a, b) => b.dealt - a.dealt);
+    const total = rows.reduce((a, r) => a + r.dealt, 0) || 1;
     const loot: HTMLElement[] = [h('div', { class: 'item' }, iconImg('coin'), h('span', { class: 'num', text: `+${fmt(rewards.coins)}` }))];
     for (const [id, n] of Object.entries(rewards.shards) as [WeaponId, number][]) {
       loot.push(h('div', { class: 'item', title: `${WEAPONS[id].name} shards` }, iconImg(id), h('span', { class: 'num', text: `+${n}` })));
     }
     const notes: string[] = [];
     for (const id of rewards.unlocked) notes.push(`New weapon unlocked: ${WEAPONS[id].name}`);
+    for (const id of rewards.costumes) notes.push(`New costume unlocked: ${COSTUMES[id].name}`);
     if (rewards.newChapter) notes.push(`Chapter ${w.stage.chapter + 1} is open`);
     if (rewards.firstClear && w.stage.difficulty === 'normal') notes.push('Hard mode unlocked for this chapter');
+    if (rewards.newBest) notes.push('New endless best!');
+    const endless = w.stage.endless;
+    const head = endless ? `${rewards.score} destroyed` : rewards.won ? 'Cleared!' : 'Overrun';
+    const sub = endless
+      ? `Best: ${fmt(Math.max(this.hooks.best, rewards.score ?? 0))}`
+      : rewards.won
+        ? `${w.stage.name} wiped out in ${Math.round(w.time)}s`
+        : `You cleared ${pct(rewards.progress)} of the train`;
     this.overlay = modal(
       this.el,
       h(
         'div',
         { class: 'panel' },
-        h('p', { class: `result-head ${rewards.won ? 'win' : 'lose'}`, text: rewards.won ? 'Cleared!' : 'Overrun' }),
-        h('p', { text: rewards.won ? `${w.stage.name} wiped out in ${Math.round(w.time)}s` : `You cleared ${pct(rewards.progress)} of the train` }),
+        h('p', { class: `result-head ${rewards.won || rewards.newBest ? 'win' : 'lose'}`, text: head }),
+        h('p', { text: sub }),
         ...notes.map((n) => h('p', { style: 'color: var(--lime); font-weight: 600', text: n })),
         h('div', { class: 'loot' }, ...loot),
         h(
           'div',
           { class: 'dmg-list' },
-          ...top.map((x) =>
+          ...rows.map((r) =>
             h(
               'div',
               { class: 'dmg-row' },
-              iconImg(x.def.id),
-              h('div', { class: 'dmg-bar' }, h('div', { style: `width:${((x.dealt / total) * 100).toFixed(1)}%` })),
-              h('span', { class: 'num', text: fmt(x.dealt) }),
+              r.icon,
+              h('div', { class: 'dmg-bar' }, h('div', { style: `width:${((r.dealt / total) * 100).toFixed(1)}%` })),
+              h('span', { class: 'num', text: fmt(r.dealt) }),
             ),
           ),
         ),

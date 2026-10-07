@@ -1,5 +1,5 @@
 import { Rng } from '../core/rng';
-import { Chain, type SegKind, type Segment } from './chain';
+import { Chain, type PowerKind, type SegKind, type Segment } from './chain';
 import {
   FIELD_H,
   FIELD_W,
@@ -8,14 +8,21 @@ import {
   SEG_CIRCLE_OFFSETS,
   SEG_RADIUS,
 } from './constants';
+import { COSTUMES, ULT_CHARGE, ULT_GAIN, type CostumeDef, type CostumeId } from './costumes';
 import { Fx } from './fx';
 import { makeLayout, type Layout } from './layouts';
-import { segmentSpecs, type StageDef } from './stage';
-import type { Cloud, HeroStats, OwnedWeapon, Projectile, WeaponId, Zone } from './types';
-import { applyCard, rollCards, type OfferedCard } from './upgrades';
+import { triggerPower, updatePowerups } from './powerups';
+import { segmentSpecs, specStream, type StageDef } from './stage';
+import type { AimMode, Cloud, HeroStats, OwnedWeapon, Projectile, TimedEffect, WeaponId, Zone } from './types';
+import { applyCard, canApply, rollCards, type OfferedCard } from './upgrades';
 import { freshStats, WEAPONS } from './weapons';
 
 export type RunState = 'playing' | 'picking' | 'revive' | 'won' | 'lost';
+
+/** Per-run allowances (the original game gated these behind ads). */
+export const RUN_REROLLS = 6;
+export const RUN_REVIVES = 3;
+export const RUN_TAKE_ALLS = 2;
 
 export interface RunSetup {
   stage: StageDef;
@@ -26,6 +33,9 @@ export interface RunSetup {
   seed: number;
   rerolls?: number;
   revives?: number;
+  takeAlls?: number;
+  costume?: CostumeId;
+  aimMode?: AimMode;
   /** Visual effects off for headless simulation. */
   fx?: boolean;
 }
@@ -36,6 +46,9 @@ export type RunEvent =
   | { type: 'offer' }
   | { type: 'boom' }
   | { type: 'revive' }
+  | { type: 'power'; kind: PowerKind }
+  | { type: 'power-spawn' }
+  | { type: 'ult' }
   | { type: 'won' }
   | { type: 'lost' };
 
@@ -78,6 +91,32 @@ export class World {
   slow = 0;
   rerolls: number;
   revives: number;
+  takeAlls: number;
+  /** Extra rarity on rerolled offers (wizard perk). */
+  rerollLuck = 0;
+  /** Rerolls spent on the offer currently shown; each makes the next roll rarer. */
+  offerRerolls = 0;
+  readonly costume: CostumeDef;
+  ultCharge = 0;
+  ultNeed = ULT_CHARGE;
+  effects: TimedEffect[] = [];
+  /** Power-up timers (seconds left). */
+  frozen = 0;
+  reversing = 0;
+  rapid = 0;
+  powerTimer = 12;
+  powersUsed = 0;
+  ultsUsed = 0;
+  ultDealt = 0;
+  powerDealt = 0;
+  aimMode: AimMode;
+  /** Manual aim: the finger position while touching, then a locked segment. */
+  readonly aim: { point: { x: number; y: number } | null; lock: Segment | null; lx: number; ly: number } = {
+    point: null,
+    lock: null,
+    lx: 0,
+    ly: 0,
+  };
   /** Times each global card was taken this run. */
   readonly globalStacks = new Map<string, number>();
   /** Chests waiting to be opened, front first. */
@@ -100,16 +139,23 @@ export class World {
     this.layout = makeLayout(setup.stage.layout, this.rng);
     const specs = segmentSpecs(setup.stage, this.rng);
     const speed = this.layout.path.length / setup.stage.crossTime;
-    this.chain = new Chain(this.layout.path, specs, speed);
+    // Endless trains draw more segments from the same stream forever.
+    const feed = setup.stage.endless ? specStream(setup.stage, new Rng(setup.seed ^ 0x5eed)) : null;
+    if (feed) for (let i = 0; i < specs.length; i++) feed();
+    this.chain = new Chain(this.layout.path, specs, speed, 760, feed);
     this.marks = new Uint32Array(specs.length + 2);
     this.fx = new Fx(setup.seed ^ 0xa5a5, setup.fx ?? true);
-    this.rerolls = setup.rerolls ?? 3;
-    this.revives = setup.revives ?? 1;
+    this.rerolls = setup.rerolls ?? RUN_REROLLS;
+    this.revives = setup.revives ?? RUN_REVIVES;
+    this.takeAlls = setup.takeAlls ?? RUN_TAKE_ALLS;
+    this.aimMode = setup.aimMode ?? 'auto';
     const h = this.layout.hero;
     this.hero = { x: h.x, y: h.y, mobile: h.mobile, aim: -Math.PI / 2, recoil: 0, pointerX: null, manualUntil: 0 };
     this.addWeapon('capsule');
     // The lead loadout slot is the starter weapon, active from the first second.
     if (setup.loadout.length > 0) this.addWeapon(setup.loadout[0]);
+    this.costume = COSTUMES[setup.costume ?? 'classic'];
+    this.costume.applyPerk(this);
   }
 
   // ---------------------------------------------------------------- weapons
@@ -149,7 +195,8 @@ export class World {
 
   cooldown(w: OwnedWeapon): number {
     const cdr = Math.min(0.6, this.setup.hero.cdr);
-    return Math.max(0.05, w.def.cooldown * w.stats.cdMult * this.globalCd * (1 - cdr));
+    const rapid = this.rapid > 0 ? 0.5 : 1;
+    return Math.max(0.05, w.def.cooldown * w.stats.cdMult * this.globalCd * (1 - cdr) * rapid);
   }
 
   qty(w: OwnedWeapon): number {
@@ -162,16 +209,19 @@ export class World {
     if (this.state !== 'playing') return;
     this.time += dt;
     this.rebuildGrid();
+    this.updateAim();
     this.updateHero(dt);
+    updatePowerups(this, dt);
     for (const w of this.weapons) this.updateWeapon(w, dt);
+    this.updateEffects(dt);
     this.updateProjectiles(dt);
     this.updateZones(dt);
-    this.chain.speedMult = 1 - this.slow;
+    this.chain.speedMult = this.reversing > 0 ? -2.2 : this.frozen > 0 ? 0 : 1 - this.slow;
     this.chain.update(dt);
     this.fx.update(dt);
     if (this.chain.retracting) this.fx.dust(this.chain.head.x, this.chain.head.y);
 
-    if (this.chain.segs.length === 0) {
+    if (this.chain.segs.length === 0 && !this.stage.endless) {
       this.state = 'won';
       this.fx.burst(this.chain.head.x, this.chain.head.y, '#ffffff', 30);
       this.events.push({ type: 'won' });
@@ -192,6 +242,14 @@ export class World {
     const h = this.hero;
     h.recoil = Math.max(0, h.recoil - dt * 6);
     if (!h.mobile) return;
+    if (this.aimMode === 'manual') {
+      // Slide under whatever you are aiming at so shots fly straight into it.
+      const tx = this.aim.point?.x ?? this.primaryTarget()?.x;
+      if (tx === undefined) return;
+      const maxStep = HERO_SPEED * (this.aim.point ? 2 : 1) * dt;
+      h.x = clamp(h.x + clamp(tx - h.x, -maxStep, maxStep), 24, FIELD_W - 24);
+      return;
+    }
     if (h.pointerX !== null) {
       h.x = clamp(h.pointerX, 24, FIELD_W - 24);
       h.manualUntil = this.time + 1.2;
@@ -217,6 +275,11 @@ export class World {
     if (w.cd < 0) w.cd = 0;
   }
 
+  private updateEffects(dt: number): void {
+    if (!this.effects.length) return;
+    this.effects = this.effects.filter((e) => e.step(this, e, dt));
+  }
+
   private updateProjectiles(dt: number): void {
     let j = 0;
     for (const p of this.projectiles) {
@@ -239,7 +302,7 @@ export class World {
       this.zones[j++] = z;
       if (z.kind === 'tower') continue; // towers are driven by their weapon
       if (z.kind === 'swab') {
-        const f = this.front();
+        const f = this.primaryTarget();
         if (f) {
           const d = Math.hypot(f.x - z.x, f.y - z.y);
           if (d > 1) {
@@ -276,9 +339,24 @@ export class World {
     return dmg;
   }
 
+  /** Damage that ignores crits and weapon stats (ultimates, power-ups). */
+  hitRaw(seg: Segment, dmg: number, source: 'ult' | 'power'): number {
+    if (!seg.alive || dmg <= 0) return 0;
+    seg.hp -= dmg;
+    seg.flash = 0.07;
+    const dealt = Math.min(dmg, dmg + seg.hp);
+    this.damageDealt += dealt;
+    if (source === 'ult') this.ultDealt += dealt;
+    else this.powerDealt += dealt;
+    this.fx.number(seg.x, seg.y - 22, dmg, true);
+    if (seg.hp <= 0) this.kill(seg);
+    return dmg;
+  }
+
   private kill(seg: Segment): void {
     this.chain.remove(seg);
     this.coins += Math.ceil(this.stage.coinMult * (1 + seg.index / 25) * (1 + this.coinBonus));
+    this.ultCharge = Math.min(this.ultNeed, this.ultCharge + ULT_GAIN[seg.kind]);
     if (seg.kind !== 'normal') {
       this.pending.push(seg.kind);
       this.events.push({ type: 'chest', elite: seg.kind === 'elite' });
@@ -286,6 +364,95 @@ export class World {
     }
     this.fx.pop(seg.x, seg.y, this.stage.theme);
     this.events.push({ type: 'kill', kind: seg.kind });
+    if (seg.power) {
+      const power = seg.power;
+      seg.power = null;
+      triggerPower(this, seg, power);
+    }
+  }
+
+  // ---------------------------------------------------------------- ultimate
+
+  get ultReady(): boolean {
+    return this.ultCharge >= this.ultNeed;
+  }
+
+  useUlt(): boolean {
+    if (this.state !== 'playing' || !this.ultReady) return false;
+    this.ultCharge = 0;
+    this.ultsUsed++;
+    this.costume.ult(this);
+    this.events.push({ type: 'ult' });
+    return true;
+  }
+
+  addEffect(e: TimedEffect): void {
+    this.effects.push(e);
+  }
+
+  // -------------------------------------------------------------------- aim
+
+  setAimMode(mode: AimMode): void {
+    this.aimMode = mode;
+    this.aim.point = null;
+    this.aim.lock = null;
+    this.hero.pointerX = null;
+  }
+
+  /**
+   * Touch input in field units. Auto aim: drag to slide the hero. Manual aim:
+   * the finger is the aim point; on release, lock onto the segment under it.
+   */
+  pointer(x: number, y: number, phase: 'down' | 'move' | 'up'): void {
+    if (this.aimMode === 'auto') {
+      if (this.hero.mobile) this.hero.pointerX = phase === 'up' ? null : x;
+      return;
+    }
+    if (phase !== 'up') {
+      this.aim.point = { x, y };
+      this.aim.lock = null;
+      return;
+    }
+    const p = this.aim.point;
+    this.aim.point = null;
+    if (!p) return;
+    const seg = this.nearest(p.x, p.y);
+    if (seg && Math.hypot(seg.x - p.x, seg.y - p.y) < 110) {
+      this.aim.lock = seg;
+      this.aim.lx = seg.x;
+      this.aim.ly = seg.y;
+    }
+  }
+
+  private updateAim(): void {
+    const lock = this.aim.lock;
+    if (!lock) return;
+    if (lock.alive && lock.visible) {
+      this.aim.lx = lock.x;
+      this.aim.ly = lock.y;
+      return;
+    }
+    // When the locked segment dies its neighbour slides into the same spot: keep chewing there.
+    const next = this.nearest(this.aim.lx, this.aim.ly);
+    this.aim.lock = next && Math.hypot(next.x - this.aim.lx, next.y - this.aim.ly) < 140 ? next : null;
+  }
+
+  /** The segment weapons should focus: your pick in manual aim, otherwise the front. */
+  primaryTarget(): Segment | undefined {
+    if (this.aimMode === 'manual') {
+      const p = this.aim.point;
+      if (p) return this.nearest(p.x, p.y) ?? this.front();
+      const lock = this.aim.lock;
+      if (lock?.alive && lock.visible) return lock;
+    }
+    return this.front();
+  }
+
+  /** Where the capsule gun points: the raw finger position counts, so you can shoot anywhere. */
+  aimPoint(): { x: number; y: number } | undefined {
+    if (this.aimMode === 'manual' && this.aim.point) return this.aim.point;
+    const t = this.primaryTarget();
+    return t ? { x: t.x, y: t.y } : undefined;
   }
 
   spawn(p: Projectile): void {
@@ -468,7 +635,8 @@ export class World {
   private openOffer(): void {
     while (this.pending.length > 0) {
       this.offerElite = this.pending[0] === 'elite';
-      const offer = rollCards(this, this.offerElite);
+      this.offerRerolls = 0;
+      const offer = rollCards(this, this.offerElite, 0);
       if (offer.length > 0) {
         this.offer = offer;
         this.state = 'picking';
@@ -491,10 +659,28 @@ export class World {
     if (this.pending.length > 0) this.openOffer();
   }
 
+  /** Each reroll on the same chest rolls rarer cards than the last. */
   reroll(): boolean {
     if (this.state !== 'picking' || this.rerolls <= 0) return false;
     this.rerolls--;
-    this.offer = rollCards(this, this.offerElite);
+    this.offerRerolls++;
+    this.offer = rollCards(this, this.offerElite, this.offerRerolls + this.rerollLuck);
+    return true;
+  }
+
+  /** Take every card on offer (limited per run). */
+  takeAll(): boolean {
+    if (this.state !== 'picking' || !this.offer || this.takeAlls <= 0) return false;
+    this.takeAlls--;
+    for (const card of this.offer) {
+      if (!canApply(this, card)) continue;
+      applyCard(this, card);
+      this.picksTaken++;
+    }
+    this.pending.shift();
+    this.offer = null;
+    this.state = 'playing';
+    if (this.pending.length > 0) this.openOffer();
     return true;
   }
 
@@ -515,7 +701,12 @@ export class World {
   }
 
   get progress(): number {
-    return this.chain.killed / this.chain.total;
+    return this.stage.endless ? 0 : this.chain.killed / this.chain.total;
+  }
+
+  /** Endless score: segments destroyed. */
+  get score(): number {
+    return this.chain.killed;
   }
 }
 

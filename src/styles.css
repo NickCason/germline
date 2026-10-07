@@ -296,10 +296,90 @@ button:focus-visible {
   right: 0;
   bottom: 0;
   padding: 6px 12px calc(var(--safe-bottom) + 8px);
+  display: grid;
+  grid-template-columns: 56px 1fr 64px;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.hud-bottom > button {
+  pointer-events: auto;
+}
+
+.hud-bottom .slots {
   display: flex;
   justify-content: center;
-  gap: 6px;
-  pointer-events: none;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.round-btn.aim {
+  width: 52px;
+  height: 52px;
+}
+
+.round-btn.aim .icon {
+  width: 32px;
+  height: 32px;
+}
+
+.round-btn.aim.on {
+  background: #ffd6dc;
+}
+
+/* Ultimate: costume portrait inside a ring that fills as kills charge it. */
+.ult {
+  --charge: 0%;
+  appearance: none;
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  border: 3px solid var(--ink);
+  padding: 4px;
+  background: conic-gradient(var(--lime) var(--charge), rgba(234, 246, 244, 0.18) 0);
+  box-shadow: 0 3px 0 var(--ink);
+  display: grid;
+  place-items: center;
+  justify-self: end;
+}
+
+.ult .icon {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  background: var(--stain-2);
+  filter: grayscale(0.7) brightness(0.8);
+}
+
+.ult.ready {
+  animation: ult-ready 900ms ease-in-out infinite;
+}
+
+.ult.ready .icon {
+  filter: none;
+}
+
+.ult:active {
+  transform: translateY(2px);
+  box-shadow: 0 1px 0 var(--ink);
+}
+
+@keyframes ult-ready {
+  0%,
+  100% {
+    box-shadow: 0 3px 0 var(--ink), 0 0 0 0 rgba(184, 240, 74, 0.7);
+  }
+  50% {
+    box-shadow: 0 3px 0 var(--ink), 0 0 0 10px rgba(184, 240, 74, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ult.ready {
+    animation: none;
+    box-shadow: 0 3px 0 var(--ink), 0 0 0 4px var(--lime);
+  }
 }
 
 .hud-bottom .slot {
@@ -608,6 +688,11 @@ button:focus-visible {
   flex-direction: column;
   align-items: center;
   gap: 14px;
+}
+
+/* Never squash items when a tab scrolls. */
+.tab-body > * {
+  flex-shrink: 0;
 }
 
 /* Auto margins centre short content but never clip it when it overflows. */
@@ -1182,4 +1267,156 @@ textarea.code {
   padding: 2px 6px;
   border-radius: 6px;
   pointer-events: none;
+}
+
+/* ------------------------------------------------------------ v0.2 bits */
+
+.pick-hint {
+  margin: 14px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.pick-actions {
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.pick-actions .pill {
+  min-width: 150px;
+}
+
+/* Evolutions shimmer; bargains look like a deal you might regret. */
+.card.evo {
+  background: linear-gradient(160deg, #fff3b0, #ffc93c 30%, #ff8ad8 65%, #8fd8ff);
+  background-size: 200% 200%;
+  animation: card-in 260ms cubic-bezier(0.3, 1.4, 0.6, 1) both, shimmer 2.4s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  50% {
+    background-position: 100% 100%;
+  }
+}
+
+.card.bargain {
+  background: linear-gradient(180deg, #5b1426, #2a0b16);
+  color: #ffd6dc;
+  box-shadow: 0 5px 0 var(--ink), inset 0 0 0 2px rgba(255, 91, 110, 0.6);
+}
+
+.card.bargain .tag-new {
+  color: #ff8a8a;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card.evo {
+    animation: none;
+  }
+}
+
+.costumes {
+  width: min(420px, 100%);
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 6px;
+}
+
+.costume {
+  appearance: none;
+  position: relative;
+  aspect-ratio: 1;
+  border-radius: 14px;
+  border: 3px solid var(--ink);
+  background: var(--stain-2);
+  padding: 2px;
+  display: grid;
+  place-items: center;
+}
+
+.costume .icon {
+  width: 100%;
+  height: 100%;
+}
+
+.costume.on {
+  background: #3d5a2a;
+  box-shadow: 0 0 0 3px var(--lime);
+}
+
+.costume.locked .icon {
+  filter: grayscale(1) brightness(0.45);
+}
+
+.costume .lockdot {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+}
+
+.costume .lockdot .icon {
+  width: 18px;
+  height: 18px;
+}
+
+.costume-info {
+  width: min(420px, 100%);
+  background: var(--stain-2);
+  border: 3px solid var(--ink);
+  border-radius: 18px;
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.costume-info .cname {
+  font-weight: 700;
+  font-size: 18px;
+}
+
+.costume-info .perk {
+  color: var(--lime);
+  font-size: 14px;
+}
+
+.costume-info .ultline {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.costume-info .ultline b {
+  color: var(--white);
+}
+
+.toggle .row .icon {
+  width: 24px;
+  height: 24px;
+}
+
+.toggle.slider input {
+  width: 46%;
+  height: 28px;
+  accent-color: var(--lime);
+}
+
+.mode-note {
+  margin: 0;
+  max-width: 340px;
+  font-size: 14px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.toggle.audio {
+  display: grid;
+  grid-template-columns: 1fr 42% auto;
+  gap: 10px;
+}
+
+.toggle.audio input[type='range'] {
+  width: 100%;
+  height: 28px;
+  accent-color: var(--lime);
 }

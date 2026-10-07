@@ -19,12 +19,29 @@ code for moving it between devices).
 - Teal chest segments open a pick of three upgrade cards; gold chests roll
   better rarities. Cards add weapons (cotton swab, acupuncture, bubbles, snot,
   meteors, towers, scalpels…) or boost the ones you have.
-- Clear 100% to win. Reach the membrane and you get one revive, which knocks
+- Clear 100% to win. Reach the membrane and you can revive (3 per run), which knocks
   the train far back down the track.
+
+- **Aim:** auto mode tracks the front of the train; flip the crosshair button
+  to manual and touch anywhere on the train to target it (release to lock on).
+- **Picks:** 6 rerolls per run, and each reroll on the same chest rolls rarer
+  cards; 2 "take all 3" per run; 3 revives per run.
+- **Power-ups** (borrowed from Zuma/Luxor): segments light up with Freeze,
+  Reverse, Bomb, Lightning, Rapid fire or a coin bag. Pop them before they fade.
+- **Evolutions** (Survivor.io style): upgrade a weapon enough while owning its
+  partner and a one-time legendary transformation appears.
+- **Devil's bargains** (Archero style): gold chests sometimes offer a big boon
+  with a catch.
+- **Costumes:** seven looks for the hero, each with a perk and its own
+  ultimate, charged by kills and fired from the HUD.
 
 Between runs, coins buy hero stats and shards level up weapons. Weapon levels
 3 and 6 add that weapon's epic and legendary cards to the chest pool. Clearing
 a chapter unlocks the next one, a new weapon, and hard mode for that chapter.
+Endless mode opens after chapter 2: the train never ends, chase a best score.
+
+All audio (music and effects) is synthesized in the browser, with separate
+toggles and volumes in Settings and on/off switches in the pause menu.
 
 ## Development
 
