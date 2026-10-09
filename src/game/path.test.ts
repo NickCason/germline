@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { Rng } from '../core/rng';
 import { FENCE_Y, FIELD_W } from './constants';
-import { makeLayout, type LayoutKind } from './layouts';
+import { isTwin, makeLayout, type LayoutKind } from './layouts';
 import { buildPath, Path } from './path';
 
 describe('Path', () => {
@@ -54,22 +54,25 @@ describe('Path', () => {
 });
 
 describe('layouts', () => {
-  const kinds: LayoutKind[] = ['rows', 'columns', 'spiral'];
+  const kinds: LayoutKind[] = ['rows', 'columns', 'spiral', 'twinColumns', 'twinRows'];
   for (const kind of kinds) {
     it(`${kind}: a long track that ends at the defence line`, () => {
       for (let seed = 1; seed <= 5; seed++) {
         const layout = makeLayout(kind, new Rng(seed));
-        expect(layout.path.length).toBeGreaterThan(4000);
-        const end = layout.path.pos(layout.path.length);
-        if (layout.fenceY !== null) {
-          expect(Math.abs(end.y - FENCE_Y)).toBeLessThan(Path.STEP + 0.5);
-        } else {
-          const d = Math.hypot(end.x - layout.hero.x, end.y - layout.hero.y);
-          expect(Math.abs(d - layout.goalRadius)).toBeLessThan(Path.STEP + 0.5);
+        expect(layout.paths.length).toBe(isTwin(kind) ? 2 : 1);
+        for (const path of layout.paths) {
+          expect(path.length).toBeGreaterThan(isTwin(kind) ? 2000 : 4000);
+          const end = path.pos(path.length);
+          if (layout.fenceY !== null) {
+            expect(Math.abs(end.y - FENCE_Y)).toBeLessThan(Path.STEP + 0.5);
+          } else {
+            const d = Math.hypot(end.x - layout.hero.x, end.y - layout.hero.y);
+            expect(Math.abs(d - layout.goalRadius)).toBeLessThan(Path.STEP + 0.5);
+          }
+          // The start is off-screen so the train slides in.
+          const start = path.pos(0);
+          expect(start.x < 0 || start.x > FIELD_W || start.y < 0).toBe(true);
         }
-        // The start is off-screen so the train slides in.
-        const start = layout.path.pos(0);
-        expect(start.x < 0 || start.x > FIELD_W || start.y < 0).toBe(true);
       }
     });
   }

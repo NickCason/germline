@@ -49,7 +49,7 @@ export function updatePowerups(world: World, dt: number): void {
 }
 
 export function triggerPower(world: World, seg: Segment, kind: PowerKind): void {
-  world.events.push({ type: 'power', kind });
+  world.events.push({ type: 'power', kind, x: seg.x, y: seg.y });
   world.powersUsed++;
   switch (kind) {
     case 'freeze':

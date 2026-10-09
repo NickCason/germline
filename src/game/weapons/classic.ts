@@ -1,60 +1,49 @@
-import { FIELD_H, FIELD_W } from './constants';
-import type { Segment } from './chain';
-import type { OwnedWeapon, Projectile, ProjKind, WeaponDef, WeaponId, WeaponStats } from './types';
-import type { World } from './world';
-
-export function freshStats(): WeaponStats {
-  return {
-    dmgMult: 1,
-    qty: 0,
-    cdMult: 1,
-    size: 1,
-    critAdd: 0,
-    critDmgAdd: 0,
-    speed: 1,
-    pierce: 0,
-    split: 0,
-    burst: 0,
-    duration: 1,
-    range: 1,
-    bounces: 0,
-    flags: new Set(),
-  };
-}
-
-type Step = Projectile['step'];
-
-function proj(
-  kind: ProjKind,
-  w: OwnedWeapon,
-  x: number,
-  y: number,
-  vx: number,
-  vy: number,
-  r: number,
-  dmg: number,
-  life: number,
-  step: Step,
-  extra: Partial<Projectile> = {},
-): Projectile {
-  return { kind, w, x, y, vx, vy, r, dmg, life, age: 0, pierce: 0, hit: new Set(), child: false, rot: Math.atan2(vy, vx), step, ...extra };
-}
-
-function offField(p: Projectile, margin = 60): boolean {
-  return p.x < -margin || p.x > FIELD_W + margin || p.y < -margin || p.y > FIELD_H + margin;
-}
-
-function floorY(world: World): number {
-  return world.layout.fenceY !== null ? world.layout.fenceY - 14 : FIELD_H - 20;
-}
+import { FIELD_H, FIELD_W } from '../constants';
+import type { Segment } from '../chain';
+import type { OwnedWeapon, Projectile, WeaponDef } from '../types';
+import type { World } from '../world';
+import { floorY, offField, proj, type Step } from './common';
 
 // ------------------------------------------------------------------ capsule
+
+export const RAINBOW = ['#ff5b6e', '#ffb347', '#ffe066', '#6dff9a', '#5fd3ff', '#b77cff'];
+
+/** A capsule crossing a prism crystal fans out into rainbow capsules (owned by the prism). */
+function refract(world: World, p: Projectile): void {
+  const prism = world.owned('prism');
+  if (!prism) return;
+  const n = prism.stats.flags.has('dispersion') ? 5 : 3;
+  const base = Math.atan2(p.vy, p.vx);
+  const sp = Math.hypot(p.vx, p.vy);
+  const dmg = world.weaponDamage(prism) * 0.6;
+  for (let i = 0; i < n; i++) {
+    const a = base + (i - (n - 1) / 2) * 0.26;
+    world.spawn(
+      proj('capsule', prism, p.x, p.y, Math.cos(a) * sp, Math.sin(a) * sp, 6, dmg, 1.2, capsuleStep, {
+        child: true,
+        pierce: 1,
+        refracted: true,
+        color: RAINBOW[(i + Math.floor(world.time * 10)) % RAINBOW.length],
+      }),
+    );
+  }
+  world.fx.burst(p.x, p.y, '#ffffff', 5);
+}
 
 const capsuleStep: Step = (world, p, dt) => {
   p.x += p.vx * dt;
   p.y += p.vy * dt;
   p.life -= dt;
   if (p.life <= 0 || offField(p)) return false;
+  if (!p.refracted && world.prisms.length) {
+    for (const pr of world.prisms) {
+      if ((p.x - pr.x) ** 2 + (p.y - pr.y) ** 2 < pr.r * pr.r) {
+        p.refracted = true;
+        refract(world, p);
+        break;
+      }
+    }
+  }
   const seg = world.contact(p.x, p.y, p.r, p.hit);
   if (!seg) return true;
   p.hit.add(seg.id);
@@ -109,7 +98,7 @@ function capsuleVolley(world: World, w: OwnedWeapon): void {
   world.hero.recoil = 1;
 }
 
-const capsule: WeaponDef = {
+export const capsule: WeaponDef = {
   id: 'capsule',
   name: 'Capsule',
   blurb: 'Your trusty pill launcher. Fires at the front of the train, or wherever you aim.',
@@ -174,7 +163,7 @@ const swabStep: Step = (world, p, dt) => {
   return true;
 };
 
-const swab: WeaponDef = {
+export const swab: WeaponDef = {
   id: 'swab',
   name: 'Cotton Swab',
   blurb: 'Tosses a blazing swab that spins in place, scorching everything nearby.',
@@ -237,7 +226,7 @@ const needleStep: Step = (world, p, dt) => {
   return true; // needles pierce everything
 };
 
-const needle: WeaponDef = {
+export const needle: WeaponDef = {
   id: 'needle',
   name: 'Acupuncture',
   blurb: 'Golden needles that pierce clean through every segment in their path.',
@@ -322,7 +311,7 @@ const bubbleStep: Step = (world, p, dt) => {
   return true;
 };
 
-const bubble: WeaponDef = {
+export const bubble: WeaponDef = {
   id: 'bubble',
   name: 'Disinfectant Bubble',
   blurb: 'Bouncing water balls that ricochet off the train and burst at the end.',
@@ -353,47 +342,63 @@ const bubble: WeaponDef = {
 
 // --------------------------------------------------------------------- snot
 
+/** Pick a snot dragon's next victim: the aimed segment for the lead dragon, otherwise any. */
+function snotTarget(world: World, lead: boolean): Segment | undefined {
+  return lead ? world.primaryTarget() : world.randomVisible();
+}
+
+/**
+ * Snot dragons dive onto a segment and corkscrew tight loops around it,
+ * slapping it and anything brushing past; when it dies they dart to the next.
+ */
 const snotStep: Step = (world, p, dt) => {
-  if (!p.target?.alive || !p.target.visible || p.age > (p.phase ?? 0)) {
-    p.target = world.randomVisible();
-    p.phase = p.age + 1.3;
-  }
-  const sp = 300;
-  if (p.target) {
-    const dx = p.target.x - p.x;
-    const dy = p.target.y - p.y;
+  const lead = p.child === false && (p.gen ?? 0) === 0;
+  if (!p.target?.alive || !p.target.visible) p.target = snotTarget(world, lead);
+  const t = p.target;
+  if (t) {
+    const orbit = 22 + 8 * p.w.stats.size;
+    p.t = (p.t ?? 0) + dt * 7.5;
+    const gx = t.x + Math.cos(p.t) * orbit;
+    const gy = t.y + Math.sin(p.t) * orbit * 0.8;
+    const dx = gx - p.x;
+    const dy = gy - p.y;
     const d = Math.hypot(dx, dy) || 1;
-    const blend = Math.min(1, 3 * dt);
-    p.vx += ((dx / d) * sp - p.vx) * blend;
-    p.vy += ((dy / d) * sp - p.vy) * blend;
+    // Far away: fly over fast. Close: lock into the loop.
+    const sp = d > 60 ? 560 : d * 12;
+    p.vx = (dx / d) * sp;
+    p.vy = (dy / d) * sp;
   }
-  const wob = Math.sin(p.age * 7) * 60;
-  p.x += (p.vx + wob * Math.sin(p.rot)) * dt;
-  p.y += (p.vy - wob * Math.cos(p.rot)) * dt;
-  p.rot = Math.atan2(p.vy, p.vx);
+  p.x += p.vx * dt;
+  p.y += p.vy * dt;
+  if (Math.hypot(p.vx, p.vy) > 5) p.rot = Math.atan2(p.vy, p.vx);
+  // Body trail for the dragon.
+  const trail = (p.trail ??= []);
+  trail.unshift(p.x, p.y);
+  if (trail.length > 20) trail.length = 20;
   p.life -= dt;
   const touch = (p.touch ??= new Map());
   world.forEachInCircle(p.x, p.y, p.r, (seg) => {
     if ((touch.get(seg.id) ?? -1) > p.age) return;
-    touch.set(seg.id, p.age + 0.35);
+    touch.set(seg.id, p.age + 0.28);
     world.hit(seg, p.dmg, p.w);
   });
   if (p.life <= 0) {
     if (p.w.stats.flags.has('sneeze')) {
       world.forEachInCircle(p.x, p.y, 72 * p.w.stats.size, (seg) => world.hit(seg, p.dmg * 2.5, p.w));
       world.fx.ring(p.x, p.y, 72 * p.w.stats.size, 'rgba(160,230,90,0.9)');
+      world.events.push({ type: 'boom', x: p.x, y: p.y, r: 72 * p.w.stats.size });
     }
     return false;
   }
   return true;
 };
 
-const snot: WeaponDef = {
+export const snot: WeaponDef = {
   id: 'snot',
   name: 'Snot Dragon',
-  blurb: 'A wandering glob of snot that slimes every segment it touches.',
+  blurb: 'Snot dragons dive onto a segment and loop around it, slapping everything they touch.',
   cooldown: 6,
-  power: 1.5,
+  power: 2.6,
   qty: 1,
   getRarity: 'rare',
   color: '#9be04f',
@@ -402,7 +407,11 @@ const snot: WeaponDef = {
     for (let i = 0; i < n; i++) {
       const a = -Math.PI / 2 + world.rng.range(-0.6, 0.6);
       world.spawn(
-        proj('snot', w, world.hero.x, world.hero.y - 20, Math.cos(a) * 260, Math.sin(a) * 260, 18 * w.stats.size, world.weaponDamage(w), 5 * w.stats.duration, snotStep),
+        proj('snot', w, world.hero.x, world.hero.y - 20, Math.cos(a) * 300, Math.sin(a) * 300, 18 * w.stats.size, world.weaponDamage(w), 5 * w.stats.duration, snotStep, {
+          gen: i,
+          t: (i / n) * Math.PI * 2,
+          target: snotTarget(world, i === 0),
+        }),
       );
     }
     return true;
@@ -411,51 +420,99 @@ const snot: WeaponDef = {
 
 // ------------------------------------------------------------------- roller
 
+/**
+ * Massage sticks are hurled from the hero in a cascade: each arcs up to its
+ * own row of the train, lands at the edge, then rolls the whole row flat.
+ */
 const rollerStep: Step = (world, p, dt) => {
+  if (p.age < (p.delay ?? 0)) {
+    p.x = world.hero.x;
+    p.y = world.hero.y - 24;
+    return true;
+  }
+  p.rot += dt * 14;
+  if (p.phase === 0) {
+    // Arc out from the hero to the start of the row.
+    p.t = Math.min(1, (p.t ?? 0) + dt / 0.34);
+    const t = p.t;
+    const ox = p.ox!;
+    const oy = p.oy!;
+    const tx = p.tx!;
+    const ty = p.ty!;
+    const cx = (ox + tx) / 2;
+    const cy = Math.min(oy, ty) - 90;
+    const u = 1 - t;
+    p.x = u * u * ox + 2 * u * t * cx + t * t * tx;
+    p.y = u * u * oy + 2 * u * t * cy + t * t * ty;
+    if (t >= 1) {
+      p.phase = 1;
+      p.vx = tx < FIELD_W / 2 ? 640 : -640;
+      world.fx.ring(p.x, p.y, 40, 'rgba(200,160,255,0.9)', 0.25);
+    }
+    return true;
+  }
   p.x += p.vx * dt;
   p.life -= dt;
-  p.rot += (p.vx / 30) * dt;
   if (p.life <= 0 || p.x < -80 || p.x > FIELD_W + 80) return false;
   const h = p.r;
   world.forEachOnLine(p.x, p.y - h, p.x, p.y + h, 12, (seg) => {
     if (p.hit.has(seg.id)) return;
     p.hit.add(seg.id);
     world.hit(seg, p.dmg, p.w);
-    if (p.w.stats.flags.has('knock') && !p.phase) {
-      p.phase = 1;
-      world.chain.knockback(55);
+    if (p.w.stats.flags.has('knock') && p.phase === 1) {
+      p.phase = 2;
+      world.knockback(55);
     }
   });
   return true;
 };
 
-const roller: WeaponDef = {
+/** Distinct row heights on screen, most dangerous first, so each roller gets its own row. */
+function targetRows(world: World, n: number): number[] {
+  const rows: number[] = [];
+  const first = world.primaryTarget();
+  if (first) rows.push(first.y);
+  for (const seg of world.visible()) {
+    if (rows.length >= n) break;
+    if (rows.every((y) => Math.abs(y - seg.y) > 40)) rows.push(seg.y);
+  }
+  for (let i = 0; rows.length > 0 && rows.length < n; i++) rows.push(rows[i % rows.length]);
+  return rows;
+}
+
+export const roller: WeaponDef = {
   id: 'roller',
   name: 'Massage Stick',
-  blurb: 'A heavy roller sweeps across a whole row of the train.',
+  blurb: 'Hurls heavy rollers in a cascade; each one flattens a whole row of the train.',
   cooldown: 5.5,
   power: 6,
   qty: 1,
   getRarity: 'rare',
   color: '#b77cff',
   fire(world, w) {
-    const n = world.qty(w);
-    for (let i = 0; i < n; i++) {
-      const t = i === 0 ? world.primaryTarget() : world.randomVisible();
-      if (!t) continue;
+    const rows = targetRows(world, world.qty(w));
+    if (!rows.length) return false;
+    rows.forEach((y, i) => {
       w.timers.side = 1 - (w.timers.side ?? 0);
-      const fromLeft = w.timers.side === 1;
+      const startX = w.timers.side === 1 ? -20 : FIELD_W + 20;
       world.spawn(
-        proj('roller', w, fromLeft ? -50 : FIELD_W + 50, t.y, fromLeft ? 520 : -520, 0, 24 * w.stats.size, world.weaponDamage(w), 2.6, rollerStep),
+        proj('roller', w, world.hero.x, world.hero.y - 24, 0, 0, 24 * w.stats.size, world.weaponDamage(w), 3.2, rollerStep, {
+          delay: i * 0.17,
+          phase: 0,
+          ox: world.hero.x,
+          oy: world.hero.y - 24,
+          tx: startX,
+          ty: y,
+        }),
       );
-    }
+    });
     return true;
   },
 };
 
 // -------------------------------------------------------------------- tower
 
-const tower: WeaponDef = {
+export const tower: WeaponDef = {
   id: 'tower',
   name: 'Medical Tower',
   blurb: 'Drops little towers that link up with electrotherapy lasers.',
@@ -517,7 +574,8 @@ const scalpelStep: Step = (world, p, dt) => {
   if (!p.phase) {
     p.x += p.vx * dt;
     p.y += p.vy * dt;
-    const range = 380 * p.w.stats.range;
+    // Fly at least past the target, so throws from the fence still reach the top rows.
+    const range = Math.max(380 * p.w.stats.range, p.t ?? 0);
     if (Math.hypot(p.x - (p.tx ?? 0), p.y - (p.ty ?? 0)) >= range || offField(p, 0)) {
       p.phase = 1;
       p.hit.clear();
@@ -541,12 +599,12 @@ const scalpelStep: Step = (world, p, dt) => {
   return true;
 };
 
-const scalpel: WeaponDef = {
+export const scalpel: WeaponDef = {
   id: 'scalpel',
   name: 'Flying Scalpel',
   blurb: 'Spinning blades fly out, carve through the train and boomerang back.',
   cooldown: 2.4,
-  power: 2,
+  power: 3.4,
   qty: 2,
   getRarity: 'epic',
   color: '#d8e4f0',
@@ -555,13 +613,14 @@ const scalpel: WeaponDef = {
     if (!t) return false;
     const n = world.qty(w);
     const base = world.aimFromHero(t.x, t.y);
-    const sp = 700 * w.stats.speed;
+    const sp = 900 * w.stats.speed;
     for (let i = 0; i < n; i++) {
       const a = base + (i - (n - 1) / 2) * 0.3;
       world.spawn(
-        proj('scalpel', w, world.hero.x, world.hero.y - 16, Math.cos(a) * sp, Math.sin(a) * sp, 15 * w.stats.size, world.weaponDamage(w), 4, scalpelStep, {
+        proj('scalpel', w, world.hero.x, world.hero.y - 16, Math.cos(a) * sp, Math.sin(a) * sp, 15 * w.stats.size, world.weaponDamage(w), 5, scalpelStep, {
           tx: world.hero.x,
           ty: world.hero.y,
+          t: Math.hypot(t.x - world.hero.x, t.y - world.hero.y) + 90,
           phase: 0,
         }),
       );
@@ -584,7 +643,7 @@ const meteorStep: Step = (world, p, dt) => {
     world.fx.ring(tx, ty, r, 'rgba(255,190,80,0.95)', 0.35);
     world.fx.burst(tx, ty, '#ffb347', 10);
     world.fx.kick(2);
-    world.events.push({ type: 'boom' });
+    world.events.push({ type: 'boom', x: tx, y: ty, r });
     if (s.flags.has('burn')) {
       world.addZone({ kind: 'fire', w: p.w, x: tx, y: ty, r: 46 * s.size, life: 3, maxLife: 3, tick: 0.25, tickT: 0.25, dmg: p.dmg * 0.3, rot: 0 });
     }
@@ -595,7 +654,7 @@ const meteorStep: Step = (world, p, dt) => {
   return true;
 };
 
-const meteor: WeaponDef = {
+export const meteor: WeaponDef = {
   id: 'meteor',
   name: 'Skyfall Star',
   blurb: 'Calls down a shower of meteors on random segments.',
@@ -621,12 +680,12 @@ const meteor: WeaponDef = {
 
 // ---------------------------------------------------------------- satellite
 
-const satellite: WeaponDef = {
+export const satellite: WeaponDef = {
   id: 'satellite',
   name: 'Satellite Storm',
   blurb: 'Thunderclouds that lock onto treasure chests and zap them.',
   cooldown: 1.1,
-  power: 4,
+  power: 5,
   qty: 1,
   getRarity: 'epic',
   color: '#bfe3ff',
@@ -686,28 +745,3 @@ function pickCloudTarget(world: World, x: number, y: number): Segment | undefine
   return best ?? world.primaryTarget();
 }
 
-export const WEAPONS: Record<WeaponId, WeaponDef> = {
-  capsule,
-  swab,
-  needle,
-  bubble,
-  snot,
-  roller,
-  tower,
-  scalpel,
-  meteor,
-  satellite,
-};
-
-/** Order in which chapters unlock weapons. The first two are available from the start. */
-export const WEAPON_UNLOCK_ORDER: WeaponId[] = [
-  'swab',
-  'needle',
-  'bubble',
-  'snot',
-  'meteor',
-  'roller',
-  'scalpel',
-  'tower',
-  'satellite',
-];

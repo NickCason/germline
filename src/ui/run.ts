@@ -12,7 +12,7 @@ import { Renderer } from '../render/renderer';
 import { audio } from './audio';
 import { h, modal } from './dom';
 
-const RARITY_NAME = { common: 'Common', rare: 'Rare', epic: 'Epic', legendary: 'Legendary' } as const;
+const RARITY_NAME = { common: 'Common', rare: 'Rare', epic: 'Epic', legendary: 'Legendary', mythic: 'Mythic' } as const;
 
 export interface RunHooks {
   /** Bank the finished run; returns what was earned. */
@@ -186,20 +186,20 @@ export class RunScreen {
     this.last = now;
     const w = this.world;
     if (!this.paused && w.state === 'playing') {
-      this.acc += dt * (this.hooks.settings.fast ? 2 : 1);
+      this.acc += dt * this.hooks.settings.speed;
       let steps = 0;
-      while (this.acc >= SIM_DT && steps < 12) {
+      while (this.acc >= SIM_DT && steps < 20) {
         w.step(SIM_DT);
         this.acc -= SIM_DT;
         steps++;
         if (w.state !== 'playing') break;
       }
-      if (steps === 12 || w.state !== 'playing') this.acc = 0;
+      if (steps === 20 || w.state !== 'playing') this.acc = 0;
     } else if (w.state === 'won' || w.state === 'lost') {
       // keep effects animating on the end screen
       w.fx.update(dt);
     }
-    audio.intensity = w.chain.danger;
+    audio.intensity = w.danger;
     this.drainEvents();
     this.syncState();
     this.renderer.render(w);
@@ -254,6 +254,10 @@ export class RunScreen {
         case 'lost':
           audio.play('lose');
           break;
+        case 'mutation':
+          this.banner(`Mutation ${roman(e.tier)}`, e.tier === 3 ? 'Tougher and faster. You can carry one more weapon.' : 'The virus grows tougher and faster');
+          audio.play('elite');
+          break;
         case 'offer':
           break;
       }
@@ -302,6 +306,13 @@ export class RunScreen {
     }
   }
 
+  /** A short-lived announcement across the middle of the screen. */
+  private banner(title: string, sub: string): void {
+    const el = h('div', { class: 'announce' }, h('div', { class: 'announce-title', text: title }), h('div', { class: 'announce-sub', text: sub }));
+    this.el.append(el);
+    setTimeout(() => el.remove(), 2600);
+  }
+
   private updateSlots(): void {
     const key = this.world.weapons.map((w) => w.def.id).join(',');
     if (key === this.slotKey) return;
@@ -309,17 +320,19 @@ export class RunScreen {
     this.slots.replaceChildren(...this.world.weapons.map((w) => h('div', { class: 'slot', title: w.def.name }, iconImg(w.def.id))));
   }
 
+  /** Cycle 1x → 2x → 3x → 4x. */
   private toggleSpeed(): void {
     audio.play('tap');
-    this.hooks.settings.fast = !this.hooks.settings.fast;
+    this.hooks.settings.speed = (this.hooks.settings.speed % 4) + 1;
     this.hooks.persist();
     this.syncSpeed();
   }
 
   private syncSpeed(): void {
-    const fast = this.hooks.settings.fast;
-    this.speedBtn.textContent = fast ? '2×' : '1×';
-    this.speedBtn.classList.toggle('on', fast);
+    const speed = this.hooks.settings.speed;
+    this.speedBtn.textContent = `${speed}×`;
+    this.speedBtn.classList.toggle('on', speed > 1);
+    this.speedBtn.dataset.speed = String(speed);
   }
 
   private toggleAim(mode?: AimMode): void {
@@ -542,4 +555,22 @@ export class RunScreen {
       ),
     );
   }
+}
+
+function roman(n: number): string {
+  const table: [number, string][] = [
+    [10, 'X'],
+    [9, 'IX'],
+    [5, 'V'],
+    [4, 'IV'],
+    [1, 'I'],
+  ];
+  let out = '';
+  for (const [v, sym] of table) {
+    while (n >= v) {
+      out += sym;
+      n -= v;
+    }
+  }
+  return out;
 }

@@ -43,7 +43,7 @@ export const COSTUMES: Record<CostumeId, CostumeDef> = {
       world.ultNeed = ULT_CHARGE * 0.75;
     },
     ult: (world) => {
-      world.chain.knockback(420);
+      world.knockback(420);
       world.fx.ring(world.hero.x, world.hero.y, 520, 'rgba(255,157,176,0.9)', 0.6);
       world.fx.kick(5);
       for (const seg of [...world.visible()]) world.hitRaw(seg, seg.maxHp * 0.08, 'ult');

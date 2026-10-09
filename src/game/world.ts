@@ -1,5 +1,5 @@
 import { Rng } from '../core/rng';
-import { Chain, type PowerKind, type SegKind, type Segment } from './chain';
+import { Chain, type PowerKind, type SegKind, type Segment, type SegmentSpec } from './chain';
 import {
   FIELD_H,
   FIELD_W,
@@ -12,14 +12,17 @@ import { COSTUMES, ULT_CHARGE, ULT_GAIN, type CostumeDef, type CostumeId } from 
 import { Fx } from './fx';
 import { makeLayout, type Layout } from './layouts';
 import { triggerPower, updatePowerups } from './powerups';
-import { segmentSpecs, specStream, type StageDef } from './stage';
+import { MUTATION_EVERY, segmentSpecs, specStream, type StageDef } from './stage';
 import type { AimMode, Cloud, HeroStats, OwnedWeapon, Projectile, TimedEffect, WeaponId, Zone } from './types';
 import { applyCard, canApply, rollCards, type OfferedCard } from './upgrades';
 import { freshStats, WEAPONS } from './weapons';
 
 export type RunState = 'playing' | 'picking' | 'revive' | 'won' | 'lost';
 
-/** Per-run allowances (the original game gated these behind ads). */
+/**
+ * Per-run allowances (the original game gated these behind ads). Every chest
+ * also gets one free reroll; the pool below pays for the second and beyond.
+ */
 export const RUN_REROLLS = 6;
 export const RUN_REVIVES = 3;
 export const RUN_TAKE_ALLS = 2;
@@ -41,14 +44,15 @@ export interface RunSetup {
 }
 
 export type RunEvent =
-  | { type: 'kill'; kind: SegKind }
-  | { type: 'chest'; elite: boolean }
+  | { type: 'kill'; kind: SegKind; x: number; y: number }
+  | { type: 'chest'; elite: boolean; x: number; y: number }
   | { type: 'offer' }
-  | { type: 'boom' }
+  | { type: 'boom'; x: number; y: number; r: number }
   | { type: 'revive' }
-  | { type: 'power'; kind: PowerKind }
+  | { type: 'power'; kind: PowerKind; x: number; y: number }
   | { type: 'power-spawn' }
-  | { type: 'ult' }
+  | { type: 'ult'; x: number; y: number }
+  | { type: 'mutation'; tier: number }
   | { type: 'won' }
   | { type: 'lost' };
 
@@ -61,7 +65,8 @@ export class World {
   readonly stage: StageDef;
   readonly rng: Rng;
   readonly layout: Layout;
-  readonly chain: Chain;
+  /** One germ train per track; Double Dragon levels have two. */
+  readonly chains: Chain[] = [];
   readonly fx: Fx;
   readonly hero: {
     x: number;
@@ -77,6 +82,8 @@ export class World {
   projectiles: Projectile[] = [];
   zones: Zone[] = [];
   clouds: Cloud[] = [];
+  /** Floating prism crystals (the prism weapon refracts capsules through these). */
+  prisms: { x: number; y: number; r: number }[] = [];
   readonly events: RunEvent[] = [];
 
   state: RunState = 'playing';
@@ -89,6 +96,8 @@ export class World {
   globalCd = 1;
   coinBonus = 0;
   slow = 0;
+  /** Contagion mythic: a dying segment hurts its neighbours by this share of its max HP. */
+  contagion = 0;
   rerolls: number;
   revives: number;
   takeAlls: number;
@@ -96,6 +105,9 @@ export class World {
   rerollLuck = 0;
   /** Rerolls spent on the offer currently shown; each makes the next roll rarer. */
   offerRerolls = 0;
+  /** The first reroll on every chest is free. */
+  freeReroll = true;
+  maxWeapons = MAX_WEAPONS;
   readonly costume: CostumeDef;
   ultCharge = 0;
   ultNeed = ULT_CHARGE;
@@ -109,6 +121,9 @@ export class World {
   ultsUsed = 0;
   ultDealt = 0;
   powerDealt = 0;
+  /** Endless mutation tier and the HP multiplier applied to new segments. */
+  mutation = 0;
+  endlessHp = 1;
   aimMode: AimMode;
   /** Manual aim: the finger position while touching, then a locked segment. */
   readonly aim: { point: { x: number; y: number } | null; lock: Segment | null; lx: number; ly: number } = {
@@ -127,7 +142,7 @@ export class World {
 
   private spawned: Projectile[] = [];
   private grid: Segment[][] = Array.from({ length: GRID_COLS * GRID_ROWS }, () => []);
-  private marks: Uint32Array;
+  private marks = new Uint32Array(256);
   private stamp = 1;
   private visibleCache: Segment[] = [];
   private nextGroup = 1;
@@ -137,13 +152,26 @@ export class World {
     this.stage = setup.stage;
     this.rng = new Rng(setup.seed);
     this.layout = makeLayout(setup.stage.layout, this.rng);
-    const specs = segmentSpecs(setup.stage, this.rng);
-    const speed = this.layout.path.length / setup.stage.crossTime;
-    // Endless trains draw more segments from the same stream forever.
-    const feed = setup.stage.endless ? specStream(setup.stage, new Rng(setup.seed ^ 0x5eed)) : null;
-    if (feed) for (let i = 0; i < specs.length; i++) feed();
-    this.chain = new Chain(this.layout.path, specs, speed, 760, feed);
-    this.marks = new Uint32Array(specs.length + 2);
+    const ids = { next: 1 };
+    const lanes = this.layout.paths.length;
+    this.layout.paths.forEach((path, lane) => {
+      const stage = setup.stage;
+      const speed = path.length / stage.crossTime;
+      const laneStage = { ...stage, segments: Math.ceil(stage.segments / lanes) };
+      const specs = segmentSpecs(laneStage, this.rng);
+      // Endless trains draw more segments from the same stream forever.
+      let feed: (() => SegmentSpec) | null = null;
+      if (stage.endless) {
+        const stream = specStream(stage, new Rng(setup.seed ^ (0x5eed + lane)));
+        for (let i = 0; i < specs.length; i++) stream();
+        feed = () => {
+          const spec = stream();
+          spec.hp = Math.max(1, Math.round(spec.hp * this.endlessHp));
+          return spec;
+        };
+      }
+      this.chains.push(new Chain(path, specs, speed, 760, feed, ids, lane));
+    });
     this.fx = new Fx(setup.seed ^ 0xa5a5, setup.fx ?? true);
     this.rerolls = setup.rerolls ?? RUN_REROLLS;
     this.revives = setup.revives ?? RUN_REVIVES;
@@ -156,6 +184,32 @@ export class World {
     if (setup.loadout.length > 0) this.addWeapon(setup.loadout[0]);
     this.costume = COSTUMES[setup.costume ?? 'classic'];
     this.costume.applyPerk(this);
+  }
+
+  // ------------------------------------------------------------ the trains
+
+  /** How close the most advanced head is to breaking through (0..1). */
+  get danger(): number {
+    let d = 0;
+    for (const c of this.chains) if (c.segs.length) d = Math.max(d, c.danger);
+    return d;
+  }
+
+  get killed(): number {
+    let n = 0;
+    for (const c of this.chains) n += c.killed;
+    return n;
+  }
+
+  get totalSegments(): number {
+    let n = 0;
+    for (const c of this.chains) n += c.total;
+    return n;
+  }
+
+  /** Shove every train back along its track. */
+  knockback(dist: number): void {
+    for (const c of this.chains) c.knockback(dist);
   }
 
   // ---------------------------------------------------------------- weapons
@@ -183,7 +237,7 @@ export class World {
   }
 
   get weaponSlotsFree(): boolean {
-    return this.weapons.length < MAX_WEAPONS;
+    return this.weapons.length < this.maxWeapons;
   }
 
   /** Damage of one hit before crits. */
@@ -216,18 +270,21 @@ export class World {
     this.updateEffects(dt);
     this.updateProjectiles(dt);
     this.updateZones(dt);
-    this.chain.speedMult = this.reversing > 0 ? -2.2 : this.frozen > 0 ? 0 : 1 - this.slow;
-    this.chain.update(dt);
+    const mult = this.reversing > 0 ? -2.2 : this.frozen > 0 ? 0 : 1 - this.slow;
+    for (const c of this.chains) {
+      c.speedMult = mult;
+      c.update(dt);
+      if (c.retracting) this.fx.dust(c.head.x, c.head.y);
+    }
     this.fx.update(dt);
-    if (this.chain.retracting) this.fx.dust(this.chain.head.x, this.chain.head.y);
 
-    if (this.chain.segs.length === 0 && !this.stage.endless) {
+    if (!this.stage.endless && this.chains.every((c) => c.segs.length === 0)) {
       this.state = 'won';
-      this.fx.burst(this.chain.head.x, this.chain.head.y, '#ffffff', 30);
+      for (const c of this.chains) this.fx.burst(c.head.x, c.head.y, '#ffffff', 30);
       this.events.push({ type: 'won' });
       return;
     }
-    if (this.chain.headS >= this.layout.path.length) {
+    if (this.chains.some((c) => c.segs.length > 0 && c.headS >= c.path.length)) {
       if (this.revives > 0) this.state = 'revive';
       else {
         this.state = 'lost';
@@ -300,7 +357,7 @@ export class World {
       z.rot += dt * 9;
       if (z.life <= 0) continue;
       this.zones[j++] = z;
-      if (z.kind === 'tower') continue; // towers are driven by their weapon
+      if (z.kind === 'tower' || z.kind === 'well') continue; // driven by their weapons
       if (z.kind === 'swab') {
         const f = this.primaryTarget();
         if (f) {
@@ -334,7 +391,7 @@ export class World {
     const dealt = Math.min(dmg, dmg + seg.hp);
     this.damageDealt += dealt;
     w.dealt += dealt;
-    this.fx.number(seg.x, seg.y - 22, dmg, crit);
+    this.fx.number(seg.x, seg.y - 22, dmg, crit, w.def.color);
     if (seg.hp <= 0) this.kill(seg);
     return dmg;
   }
@@ -348,27 +405,43 @@ export class World {
     this.damageDealt += dealt;
     if (source === 'ult') this.ultDealt += dealt;
     else this.powerDealt += dealt;
-    this.fx.number(seg.x, seg.y - 22, dmg, true);
+    this.fx.number(seg.x, seg.y - 22, dmg, true, source === 'ult' ? '#ff9db0' : '#ffd34d');
     if (seg.hp <= 0) this.kill(seg);
     return dmg;
   }
 
   private kill(seg: Segment): void {
-    this.chain.remove(seg);
+    const chain = this.chains[seg.lane];
+    chain.remove(seg);
     this.coins += Math.ceil(this.stage.coinMult * (1 + seg.index / 25) * (1 + this.coinBonus));
     this.ultCharge = Math.min(this.ultNeed, this.ultCharge + ULT_GAIN[seg.kind]);
     if (seg.kind !== 'normal') {
       this.pending.push(seg.kind);
-      this.events.push({ type: 'chest', elite: seg.kind === 'elite' });
+      this.events.push({ type: 'chest', elite: seg.kind === 'elite', x: seg.x, y: seg.y });
       this.fx.burst(seg.x, seg.y, seg.kind === 'elite' ? '#ffd34d' : '#6ff2e1', 18);
     }
     this.fx.pop(seg.x, seg.y, this.stage.theme);
-    this.events.push({ type: 'kill', kind: seg.kind });
+    this.events.push({ type: 'kill', kind: seg.kind, x: seg.x, y: seg.y });
     if (seg.power) {
       const power = seg.power;
       seg.power = null;
       triggerPower(this, seg, power);
     }
+    if (this.contagion > 0) {
+      // Contagion: the burst splashes onto whatever is touching the dead segment.
+      const splash = seg.maxHp * this.contagion;
+      this.forEachInCircle(seg.x, seg.y, 34, (n) => this.hitRaw(n, splash, 'power'));
+    }
+    if (this.stage.endless && this.killed >= (this.mutation + 1) * MUTATION_EVERY) this.mutate();
+  }
+
+  /** Endless: the virus adapts. New segments get tougher, the trains speed up. */
+  private mutate(): void {
+    this.mutation++;
+    this.endlessHp *= 1.32;
+    for (const c of this.chains) c.speed *= 1.05;
+    if (this.mutation === 3) this.maxWeapons += 1;
+    this.events.push({ type: 'mutation', tier: this.mutation });
   }
 
   // ---------------------------------------------------------------- ultimate
@@ -382,7 +455,7 @@ export class World {
     this.ultCharge = 0;
     this.ultsUsed++;
     this.costume.ult(this);
-    this.events.push({ type: 'ult' });
+    this.events.push({ type: 'ult', x: this.hero.x, y: this.hero.y });
     return true;
   }
 
@@ -469,10 +542,20 @@ export class World {
 
   // ---------------------------------------------------------------- queries
 
-  /** The visible segment closest to breaking through. */
+  /** The visible segment closest to breaking through, across every train. */
   front(): Segment | undefined {
-    for (const seg of this.chain.segs) if (seg.visible) return seg;
-    return undefined;
+    let best: Segment | undefined;
+    let bestDanger = -Infinity;
+    for (const c of this.chains) {
+      if (c.danger <= bestDanger) continue;
+      for (const seg of c.segs) {
+        if (!seg.visible) continue;
+        best = seg;
+        bestDanger = c.danger;
+        break;
+      }
+    }
+    return best;
   }
 
   visible(): Segment[] {
@@ -600,18 +683,26 @@ export class World {
   private rebuildGrid(): void {
     for (const cell of this.grid) cell.length = 0;
     this.visibleCache = [];
-    for (const seg of this.chain.segs) {
-      if (!seg.visible) continue;
-      this.visibleCache.push(seg);
-      for (let k = 0; k < SEG_CIRCLE_OFFSETS.length; k++) {
-        const c0 = cellCoord(seg.cx[k] - SEG_RADIUS, GRID_COLS);
-        const c1 = cellCoord(seg.cx[k] + SEG_RADIUS, GRID_COLS);
-        const r0 = cellCoord(seg.cy[k] - SEG_RADIUS, GRID_ROWS);
-        const r1 = cellCoord(seg.cy[k] + SEG_RADIUS, GRID_ROWS);
-        for (let r = r0; r <= r1; r++) {
-          for (let c = c0; c <= c1; c++) {
-            const cell = this.grid[r * GRID_COLS + c];
-            if (cell[cell.length - 1] !== seg) cell.push(seg);
+    for (const chain of this.chains) {
+      for (const seg of chain.segs) {
+        if (!seg.visible) continue;
+        // Endless trains keep minting ids; grow the dedupe table to match.
+        if (seg.id >= this.marks.length) {
+          const bigger = new Uint32Array(Math.max(seg.id + 1, this.marks.length * 2));
+          bigger.set(this.marks);
+          this.marks = bigger;
+        }
+        this.visibleCache.push(seg);
+        for (let k = 0; k < SEG_CIRCLE_OFFSETS.length; k++) {
+          const c0 = cellCoord(seg.cx[k] - SEG_RADIUS, GRID_COLS);
+          const c1 = cellCoord(seg.cx[k] + SEG_RADIUS, GRID_COLS);
+          const r0 = cellCoord(seg.cy[k] - SEG_RADIUS, GRID_ROWS);
+          const r1 = cellCoord(seg.cy[k] + SEG_RADIUS, GRID_ROWS);
+          for (let r = r0; r <= r1; r++) {
+            for (let c = c0; c <= c1; c++) {
+              const cell = this.grid[r * GRID_COLS + c];
+              if (cell[cell.length - 1] !== seg) cell.push(seg);
+            }
           }
         }
       }
@@ -632,10 +723,16 @@ export class World {
 
   // ------------------------------------------------------------ chest picks
 
+  /** Rarity luck for the current offer: rerolls on it plus perks. */
+  get offerLuck(): number {
+    return this.offerRerolls > 0 ? this.offerRerolls + this.rerollLuck : 0;
+  }
+
   private openOffer(): void {
     while (this.pending.length > 0) {
       this.offerElite = this.pending[0] === 'elite';
       this.offerRerolls = 0;
+      this.freeReroll = true;
       const offer = rollCards(this, this.offerElite, 0);
       if (offer.length > 0) {
         this.offer = offer;
@@ -659,12 +756,21 @@ export class World {
     if (this.pending.length > 0) this.openOffer();
   }
 
-  /** Each reroll on the same chest rolls rarer cards than the last. */
+  get canReroll(): boolean {
+    return this.state === 'picking' && (this.freeReroll || this.rerolls > 0);
+  }
+
+  /**
+   * The first reroll on each chest is free; later ones spend the run's pool.
+   * Every reroll on the same chest raises the rarity odds again, all the way
+   * up to mythic.
+   */
   reroll(): boolean {
-    if (this.state !== 'picking' || this.rerolls <= 0) return false;
-    this.rerolls--;
+    if (!this.canReroll) return false;
+    if (this.freeReroll) this.freeReroll = false;
+    else this.rerolls--;
     this.offerRerolls++;
-    this.offer = rollCards(this, this.offerElite, this.offerRerolls + this.rerollLuck);
+    this.offer = rollCards(this, this.offerElite, this.offerLuck);
     return true;
   }
 
@@ -689,7 +795,7 @@ export class World {
   revive(): void {
     if (this.state !== 'revive' || this.revives <= 0) return;
     this.revives--;
-    this.chain.knockback(this.layout.path.length * 0.32);
+    for (const c of this.chains) c.knockback(c.path.length * 0.32);
     this.state = 'playing';
     this.events.push({ type: 'revive' });
   }
@@ -701,12 +807,12 @@ export class World {
   }
 
   get progress(): number {
-    return this.stage.endless ? 0 : this.chain.killed / this.chain.total;
+    return this.stage.endless ? 0 : this.killed / this.totalSegments;
   }
 
   /** Endless score: segments destroyed. */
   get score(): number {
-    return this.chain.killed;
+    return this.killed;
   }
 }
 

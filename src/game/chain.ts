@@ -22,7 +22,10 @@ export interface SegmentSpec {
 }
 
 export interface Segment {
+  /** Unique across every train in the run. */
   id: number;
+  /** Which train (World.chains index) this segment belongs to. */
+  lane: number;
   /** Position in the original train, 0 = right behind the head. */
   index: number;
   kind: SegKind;
@@ -72,13 +75,26 @@ export class Chain {
   /** The rush only happens once; knockbacks must not re-trigger it. */
   private rushing: boolean;
   private readonly feed: SegmentFeed | null;
+  /** Shared id counter so segment ids stay unique across several trains. */
+  private readonly ids: { next: number };
+  readonly lane: number;
 
-  constructor(path: Path, specs: readonly SegmentSpec[], speed: number, rushDist = 760, feed: SegmentFeed | null = null) {
+  constructor(
+    path: Path,
+    specs: readonly SegmentSpec[],
+    speed: number,
+    rushDist = 760,
+    feed: SegmentFeed | null = null,
+    ids: { next: number } = { next: 1 },
+    lane = 0,
+  ) {
     this.path = path;
     this.speed = speed;
     this.rushDist = rushDist;
     this.rushing = rushDist > 0;
     this.feed = feed;
+    this.ids = ids;
+    this.lane = lane;
     this.total = 0;
     this.headS = 0;
     for (const spec of specs) this.append(spec, -HEAD_GAP - this.total * SEG_LEN);
@@ -88,7 +104,8 @@ export class Chain {
   private append(spec: SegmentSpec, s: number): void {
     const i = this.total++;
     this.segs.push({
-      id: i + 1,
+      id: this.ids.next++,
+      lane: this.lane,
       index: i,
       kind: spec.kind,
       s,

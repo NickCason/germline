@@ -5,7 +5,22 @@ import { stageDef } from './stage';
 import type { WeaponId } from './types';
 import { World } from './world';
 
-const ALL: WeaponId[] = ['swab', 'needle', 'bubble', 'snot', 'roller', 'tower', 'scalpel', 'meteor', 'satellite'];
+const ALL: WeaponId[] = [
+  'swab',
+  'needle',
+  'bubble',
+  'snot',
+  'roller',
+  'tower',
+  'scalpel',
+  'meteor',
+  'satellite',
+  'laser',
+  'phage',
+  'defib',
+  'gravity',
+  'prism',
+];
 
 function play(world: World, seconds: number): void {
   for (let t = 0; t < seconds; t += SIM_DT) {
@@ -17,7 +32,7 @@ function play(world: World, seconds: number): void {
 }
 
 describe('World', () => {
-  for (const layout of ['rows', 'columns', 'spiral'] as LayoutKind[]) {
+  for (const layout of ['rows', 'columns', 'spiral', 'twinColumns', 'twinRows'] as LayoutKind[]) {
     it(`runs a ${layout} stage with every weapon without blowing up`, () => {
       const stage = { ...stageDef(1, 'normal'), layout };
       const world = new World({
@@ -28,15 +43,34 @@ describe('World', () => {
         seed: 7,
       });
       // Hand every weapon over up front so they all get exercised.
-      for (const id of ALL.slice(0, 5)) world.addWeapon(id);
+      for (const id of ALL) world.addWeapon(id);
       play(world, 90);
-      expect(world.chain.killed).toBeGreaterThan(10);
-      expect(Number.isFinite(world.chain.headS)).toBe(true);
+      expect(world.killed).toBeGreaterThan(10);
+      for (const c of world.chains) expect(Number.isFinite(c.headS)).toBe(true);
       for (const p of world.projectiles) {
         expect(Number.isFinite(p.x) && Number.isFinite(p.y)).toBe(true);
       }
+      // Every weapon should have landed damage.
+      const idle = world.weapons.filter((w) => w.dealt <= 0).map((w) => w.def.id);
+      expect(idle).toEqual([]);
     });
   }
+
+  it('double dragon: two trains, both must die to win', () => {
+    const world = new World({
+      stage: { ...stageDef(5, 'normal'), layout: 'twinColumns', segments: 16, hpScale: 0.01 },
+      hero: { atk: 500, critRate: 0, critDmg: 1.5, cdr: 0 },
+      loadout: [],
+      levels: {},
+      seed: 5,
+      fx: false,
+    });
+    expect(world.chains.length).toBe(2);
+    expect(world.totalSegments).toBe(16);
+    play(world, 200);
+    expect(world.state).toBe('won');
+    expect(world.chains.every((c) => c.segs.length === 0)).toBe(true);
+  });
 
   it('wins when the whole train is destroyed', () => {
     const world = new World({
@@ -88,7 +122,7 @@ describe('World', () => {
     const b = make();
     play(a, 60);
     play(b, 60);
-    expect(a.chain.killed).toBe(b.chain.killed);
-    expect(a.chain.headS).toBe(b.chain.headS);
+    expect(a.killed).toBe(b.killed);
+    expect(a.chains[0].headS).toBe(b.chains[0].headS);
   });
 });

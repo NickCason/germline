@@ -38,8 +38,8 @@ export interface OfferedCard {
 
 const pct = (v: number) => `${Math.round(v * 100)}%`;
 
-const dmgTiers = { common: 0.3, rare: 0.5, epic: 0.8, legendary: 1.2 };
-const cdTiers = { common: 0.15, rare: 0.25 };
+const dmgTiers = { common: 0.3, rare: 0.5, epic: 0.8, legendary: 1.2, mythic: 2 };
+const cdTiers = { common: 0.15, rare: 0.25, mythic: 0.35 };
 
 /** Shared card shapes, specialised per weapon below. */
 function damage(weapon: WeaponId, name: string): CardDef {
@@ -70,11 +70,13 @@ function cooldown(weapon: WeaponId, name: string, max = 4): CardDef {
 }
 
 function quantity(weapon: WeaponId, name: string, tiers: Partial<Record<Rarity, number>>, max: number, noun = 'quantity'): CardDef {
+  // Every quantity card can also roll mythic, one better than its best tier.
+  const best = Math.max(...Object.values(tiers).map((v) => v ?? 0));
   return {
     id: `${weapon}_qty`,
     weapon,
     name,
-    tiers,
+    tiers: { ...tiers, mythic: best + 1 },
     max,
     desc: (v) => `${WEAPONS[weapon].name} ${noun} +${v}`,
     apply: (_world, w, v) => {
@@ -123,7 +125,7 @@ const GLOBAL_CARDS: CardDef[] = [
     id: 'g_dmg',
     weapon: null,
     name: 'Inflammation',
-    tiers: { common: 0.08, rare: 0.12, epic: 0.18, legendary: 0.25 },
+    tiers: { common: 0.08, rare: 0.12, epic: 0.18, legendary: 0.25, mythic: 0.4 },
     desc: (v) => `All damage +${pct(v)}`,
     apply: (world, _w, v) => {
       world.globalDmg *= 1 + v;
@@ -133,7 +135,7 @@ const GLOBAL_CARDS: CardDef[] = [
     id: 'g_crit',
     weapon: null,
     name: 'Sharp Eye',
-    tiers: { common: 0.04, rare: 0.06, epic: 0.09 },
+    tiers: { common: 0.04, rare: 0.06, epic: 0.09, mythic: 0.14 },
     max: 6,
     desc: (v) => `Crit rate +${pct(v)} for every weapon`,
     apply: (world, _w, v) => {
@@ -144,7 +146,7 @@ const GLOBAL_CARDS: CardDef[] = [
     id: 'g_critdmg',
     weapon: null,
     name: 'Fever Pitch',
-    tiers: { common: 0.25, rare: 0.4, epic: 0.6 },
+    tiers: { common: 0.25, rare: 0.4, epic: 0.6, mythic: 1 },
     max: 6,
     desc: (v) => `Crit damage +${pct(v)} for every weapon`,
     apply: (world, _w, v) => {
@@ -155,7 +157,7 @@ const GLOBAL_CARDS: CardDef[] = [
     id: 'g_cd',
     weapon: null,
     name: 'Adrenaline',
-    tiers: { common: 0.05, rare: 0.08, epic: 0.12 },
+    tiers: { common: 0.05, rare: 0.08, epic: 0.12, mythic: 0.18 },
     max: 5,
     desc: (v) => `All cooldowns -${pct(v)}`,
     apply: (world, _w, v) => {
@@ -459,6 +461,112 @@ const WEAPON_CARDS: CardDef[] = [
   special('satellite', 'super', 'Supercell', 'legendary', 6, 'Clouds +2', (w) => {
     w.stats.qty += 2;
   }),
+
+  // laser lance
+  quantity('laser', 'Twin Beam', { rare: 1 }, 2, 'beams'),
+  damage('laser', 'Beam Damage'),
+  {
+    id: 'laser_dur',
+    weapon: 'laser',
+    name: 'Long Burn',
+    tiers: { common: 0.4, rare: 0.6 },
+    max: 3,
+    desc: (v) => `Laser Lance fires ${pct(v)} longer`,
+    apply: (_world, w, v) => {
+      w!.stats.duration *= 1 + v;
+    },
+  },
+  size('laser', 'Wider Beam', 'width'),
+  cooldown('laser', 'Capacitor', 3),
+  special('laser', 'overcharge', 'Overcharge', 'epic', 3, 'The beam burns 50% faster', (w) => {
+    w.stats.flags.add('overcharge');
+  }),
+  special('laser', 'deathray', 'Death Ray', 'legendary', 6, 'Beam width x2.2, damage +60%, lasts 50% longer', (w) => {
+    w.stats.size *= 2.2;
+    w.stats.dmgMult *= 1.6;
+    w.stats.duration *= 1.5;
+  }),
+
+  // phage swarm
+  quantity('phage', 'Swarm Size', { rare: 1, epic: 2 }, 3, 'phages'),
+  damage('phage', 'Burst Damage'),
+  cooldown('phage', 'Incubation', 3),
+  {
+    id: 'phage_latch',
+    weapon: 'phage',
+    name: 'Rapid Injection',
+    tiers: { common: 0.3, rare: 0.5 },
+    max: 3,
+    desc: (v) => `Phages inject ${pct(v)} faster`,
+    apply: (_world, w, v) => {
+      w!.stats.speed *= 1 + v;
+    },
+  },
+  special('phage', 'lytic', 'Lytic Cycle', 'epic', 3, 'Bursts splash onto neighbouring segments', (w) => {
+    w.stats.flags.add('lytic');
+  }),
+  special('phage', 'plague', 'Plague', 'legendary', 6, 'Kills release 3 phages, and their offspring can chain again', (w) => {
+    w.stats.flags.add('plague');
+  }),
+
+  // defibrillator
+  {
+    id: 'defib_chain',
+    weapon: 'defib',
+    name: 'Longer Arc',
+    tiers: { rare: 2, epic: 3 },
+    max: 3,
+    desc: (v) => `Each jolt jumps +${v} more segments`,
+    apply: (_world, w, v) => {
+      w!.stats.bounces += v;
+    },
+  },
+  damage('defib', 'Jolt Damage'),
+  cooldown('defib', 'Quick Charge', 3),
+  quantity('defib', 'Second Paddle', { epic: 1 }, 2, 'jolts'),
+  special('defib', 'charged', 'Charged Paddles', 'epic', 3, 'Jolts jump 4 more segments', (w) => {
+    w.stats.bounces += 4;
+  }),
+  special('defib', 'arrest', 'Cardiac Arrest', 'legendary', 6, 'Every jolt stuns the trains for a moment', (w) => {
+    w.stats.flags.add('arrest');
+  }),
+
+  // gravity well
+  size('gravity', 'Wider Well', 'radius'),
+  {
+    id: 'gravity_dur',
+    weapon: 'gravity',
+    name: 'Stable Singularity',
+    tiers: { common: 0.35, rare: 0.5 },
+    max: 3,
+    desc: (v) => `Wells stay open ${pct(v)} longer`,
+    apply: (_world, w, v) => {
+      w!.stats.duration *= 1 + v;
+    },
+  },
+  damage('gravity', 'Crushing Force'),
+  cooldown('gravity', 'Faster Collapse', 3),
+  quantity('gravity', 'Binary Wells', { epic: 1 }, 2, 'wells'),
+  special('gravity', 'horizon', 'Event Horizon', 'epic', 3, 'Wells grow 50% wider and last 40% longer', (w) => {
+    w.stats.size *= 1.5;
+    w.stats.duration *= 1.4;
+  }),
+  special('gravity', 'spaghetti', 'Spaghettification', 'legendary', 6, 'Segments in a well lose 2% of their max HP every tick', (w) => {
+    w.stats.flags.add('spaghetti');
+  }),
+
+  // prism crystal
+  quantity('prism', 'Twin Crystal', { epic: 1 }, 2, 'crystals'),
+  damage('prism', 'Spectrum Damage'),
+  cooldown('prism', 'Faster Spectrum', 3),
+  size('prism', 'Bigger Crystal'),
+  special('prism', 'dispersion', 'Dispersion', 'epic', 3, 'Capsules split into 5 rainbow shots instead of 3', (w) => {
+    w.stats.flags.add('dispersion');
+  }),
+  special('prism', 'spectral', 'Spectral Storm', 'legendary', 6, '+1 crystal, and spectrum bolts pierce 3 segments', (w) => {
+    w.stats.qty += 1;
+    w.stats.flags.add('spectral');
+  }),
 ];
 
 /**
@@ -545,6 +653,36 @@ const EVOLUTIONS: CardDef[] = [
       world.owned('roller')?.stats.flags.add('knock');
     },
   },
+  {
+    id: 'evo_spectrum',
+    weapon: 'laser',
+    name: 'Spectrum Lance',
+    tiers: { legendary: 1 },
+    max: 1,
+    weight: 4,
+    evo: { partner: 'prism', picks: 3 },
+    desc: () => 'The laser splits into a rainbow of 3 extra beams, damage +50%',
+    apply: (_world, w) => {
+      w!.stats.qty += 3;
+      w!.stats.dmgMult *= 1.5;
+      w!.stats.flags.add('rainbow');
+    },
+  },
+  {
+    id: 'evo_super',
+    weapon: 'defib',
+    name: 'Superconductor',
+    tiers: { legendary: 1 },
+    max: 1,
+    weight: 4,
+    evo: { partner: 'satellite', picks: 3 },
+    desc: () => 'Jolts jump 6 more segments; clouds strike 30% faster',
+    apply: (world, w) => {
+      w!.stats.bounces += 6;
+      const sat = world.owned('satellite');
+      if (sat) sat.stats.cdMult *= 0.7;
+    },
+  },
 ];
 
 /** Archero-style devil's bargains: only from gold chests, always with a catch. */
@@ -605,6 +743,114 @@ const BARGAINS: CardDef[] = [
   },
 ];
 
+/**
+ * Mythic rarity: only shows up on heavily rerolled chests, late gold chests,
+ * or deep into endless. Big, run-defining effects.
+ */
+const MYTHIC_GLOBALS: CardDef[] = [
+  {
+    id: 'm_apex',
+    weapon: null,
+    name: 'Apex Predator',
+    tiers: { mythic: 1 },
+    max: 3,
+    desc: () => 'All damage x1.8',
+    apply: (world) => {
+      world.globalDmg *= 1.8;
+    },
+  },
+  {
+    id: 'm_mito',
+    weapon: null,
+    name: 'Mitochondrial Surge',
+    tiers: { mythic: 1 },
+    max: 2,
+    desc: () => 'All cooldowns -25%',
+    apply: (world) => {
+      world.globalCd *= 0.75;
+    },
+  },
+  {
+    id: 'm_poly',
+    weapon: null,
+    name: 'Polyploidy',
+    tiers: { mythic: 1 },
+    max: 2,
+    desc: () => 'Every weapon you hold fires +1 projectile',
+    apply: (world) => {
+      for (const w of world.weapons) w.stats.qty += 1;
+    },
+  },
+  {
+    id: 'm_heart',
+    weapon: null,
+    name: 'Second Heart',
+    tiers: { mythic: 1 },
+    max: 2,
+    desc: () => '+1 revive and +1 take-all',
+    apply: (world) => {
+      world.revives += 1;
+      world.takeAlls += 1;
+    },
+  },
+  {
+    id: 'm_contagion',
+    weapon: null,
+    name: 'Contagion',
+    tiers: { mythic: 1 },
+    max: 2,
+    desc: () => 'Dying segments burst for 12% of their max HP onto their neighbours',
+    apply: (world) => {
+      world.contagion += 0.12;
+    },
+  },
+  {
+    id: 'm_symbiosis',
+    weapon: null,
+    name: 'Symbiosis',
+    tiers: { mythic: 1 },
+    max: 1,
+    desc: () => 'Carry one more weapon this run',
+    apply: (world) => {
+      world.maxWeapons += 1;
+    },
+  },
+];
+
+/** Per-weapon cards that keep long runs interesting once the basics are maxed. */
+function longRunCards(id: WeaponId): CardDef[] {
+  const name = WEAPONS[id].name;
+  return [
+    {
+      id: `${id}_ascend`,
+      weapon: id,
+      name: `Ascended ${name}`,
+      tiers: { mythic: 1 },
+      max: 3,
+      when: (world) => upgradesTaken(world, id) >= 5,
+      desc: () => `${name}: damage x2, +1 quantity, cooldown -15%`,
+      apply: (_world, w) => {
+        w!.stats.dmgMult *= 2;
+        w!.stats.qty += 1;
+        w!.stats.cdMult *= 0.85;
+      },
+    },
+    {
+      id: `${id}_overdrive`,
+      weapon: id,
+      name: `${name} Overdrive`,
+      tiers: { legendary: 1 },
+      weight: 1.2,
+      when: (world) => upgradesTaken(world, id) >= 8,
+      desc: () => `${name}: damage +35%, cooldown -8%. Stacks forever`,
+      apply: (_world, w) => {
+        w!.stats.dmgMult *= 1.35;
+        w!.stats.cdMult *= 0.92;
+      },
+    },
+  ];
+}
+
 const GET_CARDS: CardDef[] = (Object.keys(WEAPONS) as WeaponId[])
   .filter((id) => id !== 'capsule')
   .map((id) => ({
@@ -621,44 +867,49 @@ const GET_CARDS: CardDef[] = (Object.keys(WEAPONS) as WeaponId[])
     },
   }));
 
-export const ALL_CARDS: readonly CardDef[] = [...GET_CARDS, ...GLOBAL_CARDS, ...WEAPON_CARDS, ...EVOLUTIONS];
+export const ALL_CARDS: readonly CardDef[] = [
+  ...GET_CARDS,
+  ...GLOBAL_CARDS,
+  ...WEAPON_CARDS,
+  ...EVOLUTIONS,
+  ...MYTHIC_GLOBALS,
+  ...(Object.keys(WEAPONS) as WeaponId[]).flatMap(longRunCards),
+];
 export { BARGAINS, EVOLUTIONS };
 
 /**
- * Rarity odds by "luck" level: 0 for a fresh chest, +1 for each reroll on it
- * (the original's "higher probability to trigger advanced affix").
+ * Rarity odds by "luck": 0 for a fresh chest, +1 for each reroll on it. The
+ * climb keeps going: deep rerolls are mostly legendary and mythic.
  */
 const RARITY_LADDER: Record<'normal' | 'elite', Record<Rarity, number>[]> = {
   normal: [
-    { common: 52, rare: 32, epic: 12, legendary: 4 },
-    { common: 18, rare: 36, epic: 32, legendary: 14 },
-    { common: 6, rare: 26, epic: 40, legendary: 28 },
-    { common: 0, rare: 16, epic: 42, legendary: 42 },
+    { common: 52, rare: 32, epic: 12, legendary: 4, mythic: 0 },
+    { common: 18, rare: 36, epic: 32, legendary: 14, mythic: 0 },
+    { common: 6, rare: 26, epic: 40, legendary: 26, mythic: 2 },
+    { common: 0, rare: 14, epic: 40, legendary: 38, mythic: 8 },
+    { common: 0, rare: 6, epic: 32, legendary: 44, mythic: 18 },
+    { common: 0, rare: 2, epic: 22, legendary: 46, mythic: 30 },
+    { common: 0, rare: 0, epic: 14, legendary: 44, mythic: 42 },
+    { common: 0, rare: 0, epic: 8, legendary: 40, mythic: 52 },
   ],
   elite: [
-    { common: 0, rare: 30, epic: 48, legendary: 22 },
-    { common: 0, rare: 14, epic: 50, legendary: 36 },
-    { common: 0, rare: 6, epic: 44, legendary: 50 },
+    { common: 0, rare: 30, epic: 48, legendary: 20, mythic: 2 },
+    { common: 0, rare: 14, epic: 48, legendary: 32, mythic: 6 },
+    { common: 0, rare: 6, epic: 40, legendary: 40, mythic: 14 },
+    { common: 0, rare: 2, epic: 30, legendary: 44, mythic: 24 },
+    { common: 0, rare: 0, epic: 20, legendary: 44, mythic: 36 },
+    { common: 0, rare: 0, epic: 12, legendary: 40, mythic: 48 },
   ],
 };
 
-/** Weight multiplier for cards that only exist at one high rarity, by luck level. */
-const SCARCITY_LADDER: Record<'normal' | 'elite', Record<Rarity, number>[]> = {
-  normal: [
-    { common: 1, rare: 1, epic: 0.55, legendary: 0.3 },
-    { common: 0.6, rare: 0.85, epic: 1.1, legendary: 0.9 },
-    { common: 0.4, rare: 0.7, epic: 1.4, legendary: 1.3 },
-    { common: 0.3, rare: 0.6, epic: 1.6, legendary: 1.6 },
-  ],
-  elite: [
-    { common: 0.6, rare: 1, epic: 1.4, legendary: 1.4 },
-    { common: 0.5, rare: 1, epic: 1.6, legendary: 1.8 },
-    { common: 0.4, rare: 1, epic: 1.7, legendary: 2.2 },
-  ],
-};
+export function rarityOdds(elite: boolean, luck: number): Record<Rarity, number> {
+  const steps = RARITY_LADDER[elite ? 'elite' : 'normal'];
+  return steps[Math.min(steps.length - 1, Math.max(0, Math.floor(luck)))];
+}
 
-function ladder<T>(steps: T[], luck: number): T {
-  return steps[Math.min(steps.length - 1, Math.max(0, luck))];
+/** Mythic-only cards wait until a chest is heavily rerolled, the run is long, or endless gets deep. */
+function mythicOpen(world: World, elite: boolean, luck: number): boolean {
+  return luck >= 2 || (elite && world.picksTaken >= 10) || world.mutation >= 2;
 }
 
 function takenCount(world: World, card: CardDef): number {
@@ -667,7 +918,7 @@ function takenCount(world: World, card: CardDef): number {
   return world.owned(card.weapon)?.stacks.get(card.id) ?? 0;
 }
 
-function upgradesTaken(world: World, weapon: WeaponId): number {
+export function upgradesTaken(world: World, weapon: WeaponId): number {
   const w = world.owned(weapon);
   if (!w) return 0;
   let n = 0;
@@ -698,38 +949,48 @@ export function canApply(world: World, offered: OfferedCard): boolean {
 
 /**
  * Three distinct cards. `luck` 0 = fresh chest; each reroll raises it and
- * shifts the odds toward epic and legendary.
+ * shifts the odds toward legendary and mythic, with no ceiling until the
+ * ladder tops out.
  */
 export function rollCards(world: World, elite: boolean, luck = 0, count = 3): OfferedCard[] {
-  const mode = elite ? 'elite' : 'normal';
-  const rarityWeights = ladder(RARITY_LADDER[mode], luck);
-  const scarcity = ladder(SCARCITY_LADDER[mode], luck);
-  const pool = availableCards(world);
+  const odds = rarityOdds(elite, luck);
+  const base = rarityOdds(elite, 0);
+  const mythic = mythicOpen(world, elite, luck);
+  const pool = availableCards(world).filter((c) => mythic || !isMythicOnly(c));
   const out: OfferedCard[] = [];
   while (out.length < count && pool.length > 0) {
     const card = world.rng.weighted(pool, (c) => {
       const tiers = Object.keys(c.tiers) as Rarity[];
-      const scale = tiers.length === 1 ? scarcity[tiers[0]] : 1;
+      // Single-rarity cards get likelier as their rarity does, relative to a fresh chest.
+      const r = tiers[0];
+      const scale = tiers.length === 1 ? Math.min(3, Math.max(0.12, odds[r] / Math.max(base[r], 4))) : 1;
       return (c.weight ?? (c.weapon === null ? 0.7 : 1)) * scale;
     });
     pool.splice(pool.indexOf(card), 1);
-    out.push(withRarity(world, card, rarityWeights));
+    out.push(withRarity(world, card, odds, mythic));
   }
   // Gold chests sometimes slip a devil's bargain in as the last card.
   if (elite && out.length === count && world.rng.chance(0.35)) {
     const bargains = BARGAINS.filter((b) => cardAvailable(world, b));
-    if (bargains.length) out[count - 1] = withRarity(world, world.rng.pick(bargains), rarityWeights);
+    if (bargains.length) out[count - 1] = withRarity(world, world.rng.pick(bargains), odds, mythic);
   }
   return out;
 }
 
-function withRarity(world: World, card: CardDef, weights: Record<Rarity, number>): OfferedCard {
-  const tiers = Object.keys(card.tiers) as Rarity[];
+function isMythicOnly(card: CardDef): boolean {
+  const tiers = Object.keys(card.tiers);
+  return tiers.length === 1 && tiers[0] === 'mythic';
+}
+
+function withRarity(world: World, card: CardDef, odds: Record<Rarity, number>, mythic: boolean): OfferedCard {
+  let tiers = Object.keys(card.tiers) as Rarity[];
+  // A card's mythic tier stays locked until mythics are in play (mythic-only cards are filtered earlier).
+  if (!mythic && tiers.length > 1) tiers = tiers.filter((t) => t !== 'mythic');
   let rarity = tiers[0];
   if (tiers.length > 1) {
     // If the odds rule out every tier (elite + common-only), fall back to the best tier.
-    const usable = tiers.filter((t) => weights[t] > 0);
-    rarity = usable.length ? world.rng.weighted(usable, (t) => weights[t]) : tiers[tiers.length - 1];
+    const usable = tiers.filter((t) => odds[t] > 0);
+    rarity = usable.length ? world.rng.weighted(usable, (t) => odds[t]) : tiers[tiers.length - 1];
   }
   return { def: card, rarity, value: card.tiers[rarity]! };
 }

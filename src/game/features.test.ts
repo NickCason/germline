@@ -34,7 +34,7 @@ function play(w: World, seconds: number): void {
   }
 }
 
-const RANK: Record<Rarity, number> = { common: 0, rare: 1, epic: 2, legendary: 3 };
+const RANK: Record<Rarity, number> = { common: 0, rare: 1, epic: 2, legendary: 3, mythic: 4 };
 
 describe('run allowances', () => {
   it('gives the bigger reroll/revive/take-all budget, adjusted by costume perks', () => {
@@ -68,13 +68,23 @@ describe('rerolls', () => {
     expect(thrice).toBeGreaterThan(once + 0.3);
   });
 
-  it('spend a reroll and raise the luck of the current offer', () => {
+  it('are free once per chest, then spend the pool, and keep raising luck', () => {
     const w = world({ stage: { ...stageDef(1, 'normal'), segments: 30 }, hero: { atk: 500, critRate: 0, critDmg: 1.5, cdr: 0 } });
     while (w.state === 'playing') w.step(SIM_DT);
     expect(w.state).toBe('picking');
-    expect(w.reroll()).toBe(true);
+    expect(w.reroll()).toBe(true); // free
+    expect(w.rerolls).toBe(RUN_REROLLS);
+    expect(w.reroll()).toBe(true); // paid
     expect(w.rerolls).toBe(RUN_REROLLS - 1);
-    expect(w.offerRerolls).toBe(1);
+    expect(w.offerRerolls).toBe(2);
+    expect(w.offerLuck).toBe(2);
+    // The next chest gets a fresh free reroll.
+    w.choose(0);
+    while ((w.state as string) === 'playing') w.step(SIM_DT);
+    if (w.state === 'picking') {
+      expect(w.freeReroll).toBe(true);
+      expect(w.offerLuck).toBe(0);
+    }
   });
 });
 
@@ -129,14 +139,14 @@ describe('power-ups', () => {
     run(w, 12);
     const seg = w.front()!;
     triggerPower(w, seg, 'freeze');
-    const s0 = w.chain.headS;
+    const s0 = w.chains[0].headS;
     run(w, 2);
-    expect(w.chain.headS).toBeCloseTo(s0, 0);
+    expect(w.chains[0].headS).toBeCloseTo(s0, 0);
     run(w, 3); // thaw
     triggerPower(w, w.front()!, 'reverse');
-    const s1 = w.chain.headS;
+    const s1 = w.chains[0].headS;
     run(w, 2);
-    expect(w.chain.headS).toBeLessThan(s1 - 100);
+    expect(w.chains[0].headS).toBeLessThan(s1 - 100);
   });
 
   it('bomb deals a share of max HP around the segment', () => {
@@ -168,12 +178,12 @@ describe('ultimates', () => {
     expect(w.useUlt()).toBe(false);
     play(w, 10);
     w.ultCharge = w.ultNeed;
-    const before = w.chain.headS;
+    const before = w.chains[0].headS;
     expect(w.useUlt()).toBe(true);
     expect(w.ultCharge).toBe(0);
     run(w, 2);
     // Antibody Pulse shoves the train back.
-    expect(w.chain.headS).toBeLessThan(before);
+    expect(w.chains[0].headS).toBeLessThan(before);
   });
 
   for (const id of Object.keys(COSTUMES) as (keyof typeof COSTUMES)[]) {
@@ -210,6 +220,6 @@ describe('endless', () => {
     }
     expect(w.state).not.toBe('won');
     expect(w.score).toBeGreaterThan(60);
-    expect(w.chain.total).toBeGreaterThan(w.score);
+    expect(w.totalSegments).toBeGreaterThan(w.score);
   });
 });

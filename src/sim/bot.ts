@@ -4,7 +4,7 @@ import type { HeroStats, Rarity, WeaponId } from '../game/types';
 import type { OfferedCard } from '../game/upgrades';
 import { World } from '../game/world';
 
-const RARITY_BONUS: Record<Rarity, number> = { common: 1, rare: 1.3, epic: 1.7, legendary: 2.2 };
+const RARITY_BONUS: Record<Rarity, number> = { common: 1, rare: 1.3, epic: 1.7, legendary: 2.2, mythic: 3 };
 
 /** A reasonable-but-not-perfect player: grabs weapons early, then stacks damage. */
 export function scoreCard(world: World, card: OfferedCard): number {
@@ -62,8 +62,9 @@ export function playOut(world: World): World {
       world.offer.forEach((c, i) => {
         if (scoreCard(world, c) > scoreCard(world, world.offer![best])) best = i;
       });
-      // A weak offer is worth a reroll while they last (keep a couple in reserve).
-      if (scoreCard(world, world.offer[best]) < 6 && world.rerolls > 2 && world.offerRerolls < 2) {
+      // A weak offer is worth a reroll: always the free one, paid ones while a few remain.
+      const weak = scoreCard(world, world.offer[best]) < 7;
+      if (weak && (world.freeReroll || (world.rerolls > 2 && world.offerRerolls < 3))) {
         world.reroll();
         continue;
       }

@@ -5,7 +5,7 @@ import { stageDef, type Difficulty, type ThemeId } from '../game/stage';
 import { PALETTES } from '../game/themes';
 import type { WeaponId } from '../game/types';
 import { ALL_CARDS } from '../game/upgrades';
-import { WEAPON_UNLOCK_ORDER, WEAPONS } from '../game/weapons';
+import { unlockChapter, WEAPON_UNLOCK_ORDER, WEAPONS } from '../game/weapons';
 import {
   claimMilestone,
   combatPower,
@@ -41,6 +41,8 @@ const LAYOUT_HINT = {
   rows: 'Winding rows down to the membrane',
   columns: 'Snaking columns down to the membrane',
   spiral: 'A spiral closing in on you',
+  twinColumns: 'Double Dragon: two trains, two tracks',
+  twinRows: 'Double Dragon: two trains racing for the middle',
 } as const;
 
 const ALL_WEAPONS: WeaponId[] = ['capsule', ...WEAPON_UNLOCK_ORDER];
@@ -401,12 +403,11 @@ export class HomeScreen {
         ),
       );
     }
-    const collection = ALL_WEAPONS.map((id, idx) => {
+    const collection = ALL_WEAPONS.map((id) => {
       const unlocked = save.unlocked.includes(id);
       const equipped = id === 'capsule' || save.loadout.includes(id);
       if (!unlocked) {
-        // WEAPON_UNLOCK_ORDER[n] unlocks on clearing chapter n-1.
-        const chapter = idx - 2;
+        const chapter = unlockChapter(id);
         return h('button', { class: 'wslot locked', ariaLabel: `${WEAPONS[id].name}, locked`, onclick: () => toast(`Clear chapter ${chapter} to unlock`) }, iconImg(id), h('span', { class: 'lv', text: `Ch ${chapter}` }));
       }
       return h(
@@ -607,7 +608,6 @@ export class HomeScreen {
           },
         ),
         toggle('Damage numbers', () => save.settings.numbers, (v) => (save.settings.numbers = v)),
-        toggle('Start runs at 2× speed', () => save.settings.fast, (v) => (save.settings.fast = v)),
         toggle('Manual aim: touch the train to target', () => save.settings.aim === 'manual', (v) => (save.settings.aim = v ? 'manual' : 'auto')),
         h('h2', { style: 'margin-top:14px', text: 'Backup' }),
         h('p', { text: 'Your progress lives on this device. Copy the code somewhere safe, or paste one to move progress between devices.' }),

@@ -2,7 +2,7 @@ import { LOADOUT_SLOTS } from '../game/constants';
 import type { CostumeId } from '../game/costumes';
 import type { Difficulty } from '../game/stage';
 import type { AimMode, WeaponId } from '../game/types';
-import { WEAPON_UNLOCK_ORDER, WEAPONS } from '../game/weapons';
+import { unlockedWeapons, WEAPON_UNLOCK_ORDER, WEAPONS } from '../game/weapons';
 
 export type HeroStatKey = 'atk' | 'crit' | 'critDmg' | 'cdr';
 
@@ -36,7 +36,8 @@ export interface SaveData {
     music: boolean;
     musicVol: number;
     numbers: boolean;
-    fast: boolean;
+    /** Game speed multiplier, 1 to 4. */
+    speed: number;
     aim: AimMode;
   };
   stats: { runs: number; wins: number; kills: number; ults: number; powers: number };
@@ -60,7 +61,7 @@ export function freshSave(): SaveData {
     mode: 'chapters',
     costume: 'classic',
     endlessBest: 0,
-    settings: { sfx: true, sfxVol: 0.8, music: true, musicVol: 0.5, numbers: true, fast: false, aim: 'auto' },
+    settings: { sfx: true, sfxVol: 0.8, music: true, musicVol: 0.5, numbers: true, speed: 1, aim: 'auto' },
     stats: { runs: 0, wins: 0, kills: 0, ults: 0, powers: 0 },
   };
 }
@@ -91,9 +92,13 @@ export function parseSave(raw: string | null): SaveData {
       selected: { ...base.selected, ...data.selected },
       stages: { ...data.stages },
     };
-    const known = new Set(Object.keys(WEAPONS));
-    save.unlocked = (save.unlocked ?? base.unlocked).filter((id) => known.has(id));
-    if (!save.unlocked.includes('capsule')) save.unlocked.unshift('capsule');
+    // v0.2 stored a boolean 2x flag.
+    const legacy = data.settings as { fast?: boolean } | undefined;
+    if (legacy?.fast && !(data.settings as { speed?: number }).speed) save.settings.speed = 2;
+    save.settings.speed = Math.min(4, Math.max(1, Math.round(save.settings.speed || 1)));
+    delete (save.settings as { fast?: boolean }).fast;
+    // Unlocks follow campaign progress, so new weapons appear for old saves too.
+    save.unlocked = unlockedWeapons(save.maxChapter);
     save.loadout = (save.loadout ?? base.loadout)
       .filter((id) => id !== 'capsule' && save.unlocked.includes(id))
       .slice(0, LOADOUT_SLOTS);

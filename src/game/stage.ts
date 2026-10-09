@@ -1,6 +1,6 @@
 import type { Rng } from '../core/rng';
 import type { SegKind, SegmentSpec } from './chain';
-import type { LayoutKind } from './layouts';
+import { isTwin, type LayoutKind } from './layouts';
 
 export type Difficulty = 'normal' | 'hard';
 
@@ -63,6 +63,11 @@ export const HP_GROWTH = 1.65;
 export const HARD_HP = 4;
 /** Per-chapter coin growth; slightly behind HP growth so later chapters take a few more runs. */
 export const COIN_GROWTH = 1.35;
+/**
+ * Double Dragon trains are half as long each, so their tails never get as
+ * tough; this keeps the total fight comparable to a single long train.
+ */
+export const TWIN_HP = 2.6;
 
 export function stageDef(chapter: number, difficulty: Difficulty): StageDef {
   const c = Math.max(1, Math.floor(chapter));
@@ -78,14 +83,15 @@ export function stageDef(chapter: number, difficulty: Difficulty): StageDef {
     layout: layoutFor(c),
     segments: Math.min(100 + (c - 1) * 3, 160),
     crossTime: 104,
-    hpScale: Math.pow(HP_GROWTH, c - 1) * (hard ? HARD_HP : 1),
+    hpScale: Math.pow(HP_GROWTH, c - 1) * (hard ? HARD_HP : 1) * (isTwin(layoutFor(c)) ? TWIN_HP : 1),
     coinMult: Math.pow(COIN_GROWTH, c - 1) * (hard ? 2.5 : 1),
   };
 }
 
-function layoutFor(chapter: number): LayoutKind {
+/** Chapters 1–2 teach on rows; after that layouts rotate, with a Double Dragon every few chapters. */
+export function layoutFor(chapter: number): LayoutKind {
   if (chapter <= 2) return 'rows';
-  const cycle: LayoutKind[] = ['columns', 'spiral', 'rows'];
+  const cycle: LayoutKind[] = ['columns', 'spiral', 'twinColumns', 'rows', 'columns', 'twinRows', 'spiral', 'rows'];
   return cycle[(chapter - 3) % cycle.length];
 }
 
@@ -129,21 +135,26 @@ export const ENDLESS_START = 40;
  * progress so it opens with a fight instead of a warm-up.
  */
 export function endlessDef(maxChapter: number, seed: number): StageDef {
-  const layouts: LayoutKind[] = ['rows', 'columns', 'spiral'];
-  const level = Math.max(0, maxChapter - 3);
+  const layouts: LayoutKind[] = ['rows', 'columns', 'spiral', 'twinColumns', 'twinRows'];
+  const layout = layouts[seed % layouts.length];
+  // Starts as tough as your best unlocked chapter; mutations ramp it from there.
+  const level = Math.max(0, maxChapter - 1);
   return {
     chapter: maxChapter,
     difficulty: 'normal',
-    name: 'Endless Mutation',
+    name: isTwin(layout) ? 'Endless Double Dragon' : 'Endless Mutation',
     theme: THEME_CYCLE[seed % THEME_CYCLE.length],
-    layout: layouts[seed % layouts.length],
+    layout,
     segments: Infinity,
-    crossTime: 104,
-    hpScale: Math.pow(HP_GROWTH, level),
-    coinMult: Math.pow(COIN_GROWTH, level) * 0.6,
+    crossTime: 100,
+    hpScale: Math.pow(HP_GROWTH, level) * (isTwin(layout) ? TWIN_HP : 1),
+    coinMult: Math.pow(COIN_GROWTH, level) * 0.7,
     endless: true,
   };
 }
+
+/** Endless: every this many kills the virus mutates (tougher, faster). */
+export const MUTATION_EVERY = 35;
 
 function roman(n: number): string {
   const table: [number, string][] = [

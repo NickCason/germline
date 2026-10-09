@@ -5,7 +5,7 @@ import type { ThemeId } from '../game/stage';
 import { PALETTES } from '../game/themes';
 import type { Projectile, Zone } from '../game/types';
 import type { World } from '../game/world';
-import type { PowerKind } from '../game/chain';
+import type { Chain, PowerKind } from '../game/chain';
 import type { CostumeId } from '../game/costumes';
 import { iconCanvas, type IconId } from './icons';
 import { drawSprite, heroSprite, INK, ThemeSprites, type Sprite } from './sprites';
@@ -173,14 +173,16 @@ export class Renderer {
     g.lineWidth = SEG_RADIUS * 2 + 8;
     g.lineJoin = 'round';
     g.lineCap = 'round';
-    g.beginPath();
-    let first = true;
-    for (const [x, y] of world.layout.path.points(6)) {
-      if (first) g.moveTo(x, y);
-      else g.lineTo(x, y);
-      first = false;
+    for (const path of world.layout.paths) {
+      g.beginPath();
+      let first = true;
+      for (const [x, y] of path.points(6)) {
+        if (first) g.moveTo(x, y);
+        else g.lineTo(x, y);
+        first = false;
+      }
+      g.stroke();
     }
-    g.stroke();
 
     const layout = world.layout;
     if (layout.fenceY !== null) this.drawMembrane(g, layout.fenceY);
@@ -223,7 +225,7 @@ export class Renderer {
   // ---------------------------------------------------------------- drawing
 
   private drawDanger(world: World): void {
-    const d = world.chain.danger;
+    const d = world.danger;
     if (d < 0.75) return;
     const ctx = this.ctx;
     const pulse = 0.5 + 0.5 * Math.sin(world.time * 10);
@@ -240,13 +242,16 @@ export class Renderer {
   }
 
   private drawChain(world: World): void {
+    for (const chain of world.chains) this.drawTrain(world, chain);
+  }
+
+  private drawTrain(world: World, chain: Chain): void {
     const ctx = this.ctx;
     const sp = this.sprites!;
-    const chain = world.chain;
     const path = chain.path;
     const segs = chain.segs;
     const tmp = this.tmp;
-    this.drawSilhouette(world);
+    this.drawSilhouette(chain);
     // Tail first so the front of the train draws on top.
     for (let i = segs.length - 1; i >= 0; i--) {
       const seg = segs[i];
@@ -269,7 +274,7 @@ export class Renderer {
       const fade = Math.min(1, (world.frozen > 0 ? world.frozen : world.reversing) / 0.5);
       ctx.strokeStyle = world.frozen > 0 ? `rgba(190,235,255,${(0.5 * fade).toFixed(3)})` : `rgba(190,150,255,${(0.4 * fade).toFixed(3)})`;
       ctx.lineWidth = SEG_RADIUS * 2;
-      this.strokeGroups(world, 2);
+      this.strokeGroups(chain, 2);
     }
     // Chests and HP labels on top of the body.
     ctx.font = LABEL_FONT;
@@ -288,16 +293,16 @@ export class Renderer {
       ctx.fillStyle = '#ffffff';
       ctx.fillText(label, seg.x, seg.y + (seg.kind === 'normal' ? 1 : 9));
     }
-    this.drawHead(world);
+    this.drawHead(world, chain);
   }
 
   /**
    * One ink outline (plus a drop shadow) around the whole train, stroked as
    * a fat path along the track rather than hundreds of sprites.
    */
-  private drawSilhouette(world: World): void {
+  private drawSilhouette(chain: Chain): void {
     const ctx = this.ctx;
-    const segs = world.chain.segs;
+    const segs = chain.segs;
     const groups: number[] = [];
     this.groups = groups;
     let start = NaN;
@@ -322,16 +327,16 @@ export class Renderer {
     ctx.lineJoin = 'round';
     ctx.strokeStyle = 'rgba(0,0,0,0.22)';
     ctx.lineWidth = SEG_RADIUS * 2 + 4;
-    this.strokeGroups(world, 8);
+    this.strokeGroups(chain, 8);
     ctx.strokeStyle = INK;
     ctx.lineWidth = SEG_RADIUS * 2 + 5.2;
-    this.strokeGroups(world, 2);
+    this.strokeGroups(chain, 2);
   }
 
   /** Stroke the current stroke style along every stretch of train. */
-  private strokeGroups(world: World, dy: number): void {
+  private strokeGroups(chain: Chain, dy: number): void {
     const ctx = this.ctx;
-    const path = world.chain.path;
+    const path = chain.path;
     const tmp = this.tmp;
     const groups = this.groups;
     if (!groups.length) return;
@@ -425,8 +430,7 @@ export class Renderer {
     drawSprite(this.ctx, seg.kind === 'elite' ? sp.elite : sp.chest, seg.x, seg.y - 4 + bob, 0.95);
   }
 
-  private drawHead(world: World): void {
-    const chain = world.chain;
+  private drawHead(world: World, chain: Chain): void {
     if (!chain.segs.length) return;
     const h = chain.head;
     if (h.y < -60 || h.x < -60 || h.x > FIELD_W + 60) return;

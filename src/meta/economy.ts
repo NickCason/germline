@@ -1,7 +1,7 @@
 import { COSTUMES, type CostumeId } from '../game/costumes';
 import { HARD_HP, HP_GROWTH, stageDef, type Difficulty } from '../game/stage';
 import type { HeroStats, WeaponId } from '../game/types';
-import { WEAPON_UNLOCK_ORDER } from '../game/weapons';
+import { unlockedWeapons } from '../game/weapons';
 import type { World } from '../game/world';
 import { freshSave, stageRecord, type HeroStatKey, type SaveData } from './save';
 
@@ -146,17 +146,16 @@ export function settleRun(save: SaveData, world: World, rng: () => number = Math
 
   const unlocked: WeaponId[] = [];
   let newChapter = false;
-  if (firstClear && stage.difficulty === 'normal') {
-    const next = WEAPON_UNLOCK_ORDER[stage.chapter + 1];
-    if (next && !save.unlocked.includes(next)) {
-      save.unlocked.push(next);
-      unlocked.push(next);
-      // Fill an empty loadout slot so the new toy shows up straight away.
-      if (save.loadout.length < 5) save.loadout.push(next);
-    }
-    if (stage.chapter >= save.maxChapter) {
-      save.maxChapter = stage.chapter + 1;
-      newChapter = true;
+  if (firstClear && stage.difficulty === 'normal' && stage.chapter >= save.maxChapter) {
+    const before = new Set(save.unlocked);
+    save.maxChapter = stage.chapter + 1;
+    newChapter = true;
+    save.unlocked = unlockedWeapons(save.maxChapter);
+    for (const id of save.unlocked) {
+      if (before.has(id)) continue;
+      unlocked.push(id);
+      // Fill empty loadout slots so the new toys show up straight away.
+      if (save.loadout.length < 5) save.loadout.push(id);
     }
   }
 
@@ -164,7 +163,7 @@ export function settleRun(save: SaveData, world: World, rng: () => number = Math
   for (const [id, n] of Object.entries(shards) as [WeaponId, number][]) save.weapons[id].shards += n;
   save.stats.runs++;
   if (won) save.stats.wins++;
-  save.stats.kills += world.chain.killed;
+  save.stats.kills += world.killed;
   const costumes = unlockedCostumes(save).filter((id) => !costumesBefore.has(id));
   return { coins, shards, unlocked, costumes, newChapter, firstClear, progress, won };
 }

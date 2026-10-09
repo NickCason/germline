@@ -24,10 +24,15 @@ export type WeaponId =
   | 'tower'
   | 'scalpel'
   | 'meteor'
-  | 'satellite';
+  | 'satellite'
+  | 'laser'
+  | 'phage'
+  | 'defib'
+  | 'gravity'
+  | 'prism';
 
-export type Rarity = 'common' | 'rare' | 'epic' | 'legendary';
-export const RARITIES: readonly Rarity[] = ['common', 'rare', 'epic', 'legendary'];
+export type Rarity = 'common' | 'rare' | 'epic' | 'legendary' | 'mythic';
+export const RARITIES: readonly Rarity[] = ['common', 'rare', 'epic', 'legendary', 'mythic'];
 
 export interface HeroStats {
   atk: number;
@@ -100,7 +105,9 @@ export type ProjKind =
   | 'meteor'
   | 'roller'
   | 'syringe'
-  | 'cannon';
+  | 'cannon'
+  | 'phage'
+  | 'spectrum';
 
 export interface Projectile {
   kind: ProjKind;
@@ -127,9 +134,23 @@ export interface Projectile {
   ty?: number;
   phase?: number;
   target?: Segment;
+  /** Seconds to wait at the hero before launching (cascading volleys). */
+  delay?: number;
+  /** Launch origin and flight progress for arcing projectiles. */
+  ox?: number;
+  oy?: number;
+  t?: number;
+  /** Recent positions (x, y pairs) for trails and dragon bodies. */
+  trail?: number[];
+  /** Tint override (refracted rainbow capsules). */
+  color?: string;
+  /** Phage generation, so chain reactions stop eventually. */
+  gen?: number;
+  /** Capsule already split by a prism. */
+  refracted?: boolean;
 }
 
-export type ZoneKind = 'swab' | 'puddle' | 'fire' | 'tower';
+export type ZoneKind = 'swab' | 'puddle' | 'fire' | 'tower' | 'well';
 
 export interface Zone {
   kind: ZoneKind;

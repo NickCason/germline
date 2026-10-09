@@ -6,6 +6,11 @@ import { drawHeroBody, heartPath, INK } from './sprites';
  * rendered once to data URLs so the DOM UI and canvas share one look.
  */
 export type IconId =
+  | 'laser'
+  | 'phage'
+  | 'defib'
+  | 'gravity'
+  | 'prism'
   | 'capsule'
   | 'swab'
   | 'needle'
@@ -203,6 +208,146 @@ function bolt(g: CanvasRenderingContext2D, x: number, y: number, s: number, fill
 }
 
 const DRAW: Record<IconId, Draw> = {
+  laser: (g) => {
+    g.save();
+    g.rotate(-0.78);
+    // beam
+    g.strokeStyle = 'rgba(255,91,209,0.55)';
+    g.lineWidth = 12;
+    g.beginPath();
+    g.moveTo(-6, 0);
+    g.lineTo(30, 0);
+    g.stroke();
+    g.strokeStyle = '#ffd6f4';
+    g.lineWidth = 4;
+    g.stroke();
+    // emitter
+    g.fillStyle = '#3b2f5c';
+    g.beginPath();
+    g.roundRect(-30, -10, 26, 20, 6);
+    g.fill();
+    outline(g);
+    g.fillStyle = '#ff5bd1';
+    g.beginPath();
+    g.arc(-6, 0, 6, 0, Math.PI * 2);
+    g.fill();
+    outline(g, 2);
+    g.restore();
+    star(g, 22, -22, 7, 3, '#ffffff');
+  },
+  phage: (g) => {
+    // icosahedral head
+    g.fillStyle = '#c7f36b';
+    g.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2 + Math.PI / 6;
+      g.lineTo(Math.cos(a) * 14, -14 + Math.sin(a) * 14);
+    }
+    g.closePath();
+    g.fill();
+    outline(g);
+    g.strokeStyle = 'rgba(33,20,46,0.5)';
+    g.lineWidth = 1.5;
+    g.beginPath();
+    g.moveTo(-12, -21);
+    g.lineTo(12, -7);
+    g.moveTo(12, -21);
+    g.lineTo(-12, -7);
+    g.stroke();
+    // tail
+    g.fillStyle = '#8fd0c4';
+    g.beginPath();
+    g.roundRect(-4, 0, 8, 16, 2);
+    g.fill();
+    outline(g, 2.5);
+    // legs
+    g.strokeStyle = INK;
+    g.lineWidth = 3;
+    for (const sx of [-1, 1]) {
+      g.beginPath();
+      g.moveTo(0, 16);
+      g.lineTo(sx * 12, 22);
+      g.lineTo(sx * 18, 30);
+      g.stroke();
+      g.beginPath();
+      g.moveTo(0, 16);
+      g.lineTo(sx * 5, 26);
+      g.lineTo(sx * 7, 31);
+      g.stroke();
+    }
+  },
+  defib: (g) => {
+    for (const sx of [-1, 1]) {
+      g.save();
+      g.translate(sx * 15, 6);
+      g.rotate(sx * 0.35);
+      g.fillStyle = '#eaf6f4';
+      g.beginPath();
+      g.roundRect(-10, -8, 20, 16, 5);
+      g.fill();
+      outline(g);
+      g.fillStyle = '#ff5b6e';
+      g.beginPath();
+      g.roundRect(-4, 8, 8, 14, 3);
+      g.fill();
+      outline(g, 2.5);
+      g.restore();
+    }
+    bolt(g, 0, -12, 15, '#7fe8ff');
+  },
+  gravity: (g) => {
+    g.lineCap = 'round';
+    for (let i = 0; i < 3; i++) {
+      g.strokeStyle = i === 0 ? '#9b7bff' : i === 1 ? '#d4c4ff' : '#ff8ad8';
+      g.lineWidth = 4 - i;
+      g.beginPath();
+      for (let t = 0; t <= 1; t += 0.05) {
+        const a = t * Math.PI * 1.6 + i * 2.1;
+        const r = 26 - t * 14;
+        g.lineTo(Math.cos(a) * r, Math.sin(a) * r * 0.75);
+      }
+      g.stroke();
+    }
+    g.fillStyle = '#0b0718';
+    g.beginPath();
+    g.arc(0, 0, 10, 0, Math.PI * 2);
+    g.fill();
+    g.strokeStyle = '#d4c4ff';
+    g.lineWidth = 2;
+    g.stroke();
+  },
+  prism: (g) => {
+    const colors = ['#ff5b6e', '#ffb347', '#ffe066', '#6dff9a', '#5fd3ff', '#b77cff'];
+    colors.forEach((c, i) => {
+      g.strokeStyle = c;
+      g.lineWidth = 3;
+      g.beginPath();
+      g.moveTo(6, 0);
+      g.lineTo(30, -14 + i * 6);
+      g.stroke();
+    });
+    g.strokeStyle = '#ffffff';
+    g.lineWidth = 3;
+    g.beginPath();
+    g.moveTo(-30, 6);
+    g.lineTo(-6, 0);
+    g.stroke();
+    g.fillStyle = 'rgba(232,216,255,0.85)';
+    g.beginPath();
+    g.moveTo(0, -22);
+    g.lineTo(18, 16);
+    g.lineTo(-18, 16);
+    g.closePath();
+    g.fill();
+    outline(g);
+    g.fillStyle = 'rgba(255,255,255,0.7)';
+    g.beginPath();
+    g.moveTo(0, -14);
+    g.lineTo(-8, 8);
+    g.lineTo(-2, 8);
+    g.closePath();
+    g.fill();
+  },
   capsule: (g) => {
     g.rotate(-0.7);
     pill(g, 50, 22, '#7cc8ff', '#ffffff');

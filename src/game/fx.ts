@@ -11,6 +11,8 @@ export interface DmgNumber {
   max: number;
   text: string;
   crit: boolean;
+  /** Tint for crits, from the weapon that landed it. */
+  color: string;
 }
 
 export interface Particle {
@@ -55,13 +57,15 @@ export class Fx {
   rings: Ring[] = [];
   bolts: Bolt[] = [];
   shake = 0;
+  /** Full-screen flash intensity (0..1), decays quickly. */
+  flash = 0;
 
   constructor(seed: number, enabled: boolean) {
     this.rng = new Rng(seed);
     this.enabled = enabled;
   }
 
-  number(x: number, y: number, dmg: number, crit: boolean): void {
+  number(x: number, y: number, dmg: number, crit: boolean, color = '#ff5b4d'): void {
     if (!this.enabled) return;
     if (this.numbers.length >= MAX_NUMBERS) {
       if (!crit) return;
@@ -75,6 +79,7 @@ export class Fx {
       max: crit ? 0.7 : 0.42,
       text: fmt(Math.max(1, Math.round(dmg))),
       crit,
+      color,
     });
   }
 
@@ -164,6 +169,7 @@ export class Fx {
   update(dt: number): void {
     if (!this.enabled) return;
     this.shake = Math.max(0, this.shake - dt * 30);
+    this.flash = Math.max(0, this.flash - dt * 3);
     let j = 0;
     for (const n of this.numbers) {
       n.life -= dt;
