@@ -23,7 +23,7 @@ export type RunState = 'playing' | 'picking' | 'revive' | 'won' | 'lost';
  * Per-run allowances (the original game gated these behind ads). Every chest
  * also gets one free reroll; the pool below pays for the second and beyond.
  */
-export const RUN_REROLLS = 6;
+export const RUN_REROLLS = 10;
 export const RUN_REVIVES = 3;
 export const RUN_TAKE_ALLS = 2;
 
