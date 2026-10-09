@@ -615,7 +615,8 @@ export const scalpel: WeaponDef = {
     const base = world.aimFromHero(t.x, t.y);
     const sp = 900 * w.stats.speed;
     for (let i = 0; i < n; i++) {
-      const a = base + (i - (n - 1) / 2) * 0.3;
+      // First blade dead on target, the rest fan out alternately left and right.
+      const a = base + (i % 2 === 1 ? -1 : 1) * Math.ceil(i / 2) * 0.24;
       world.spawn(
         proj('scalpel', w, world.hero.x, world.hero.y - 16, Math.cos(a) * sp, Math.sin(a) * sp, 15 * w.stats.size, world.weaponDamage(w), 5, scalpelStep, {
           tx: world.hero.x,

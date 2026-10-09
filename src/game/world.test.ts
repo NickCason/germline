@@ -34,7 +34,8 @@ function play(world: World, seconds: number): void {
 describe('World', () => {
   for (const layout of ['rows', 'columns', 'spiral', 'twinColumns', 'twinRows'] as LayoutKind[]) {
     it(`runs a ${layout} stage with every weapon without blowing up`, () => {
-      const stage = { ...stageDef(1, 'normal'), layout };
+      // Tough enough that the fight lasts long enough for every weapon to fire.
+      const stage = { ...stageDef(1, 'normal'), layout, hpScale: 8 };
       const world = new World({
         stage,
         hero: { atk: 40, critRate: 0.1, critDmg: 1.5, cdr: 0 },
