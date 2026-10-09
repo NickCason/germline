@@ -194,6 +194,7 @@ const needleStep: Step = (world, p, dt) => {
   if (!seg) return true;
   p.hit.add(seg.id);
   world.hit(seg, p.dmg, p.w);
+  world.fx.pin(p.x, p.y, Math.atan2(p.vy, p.vx));
   if (p.w.stats.flags.has('arc') && !p.child && !p.ty) {
     // Lightning Rod: the first hit arcs to two neighbours.
     p.ty = 1;

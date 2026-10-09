@@ -7,12 +7,14 @@ import { WEAPONS } from '../game/weapons';
 import { World, type RunSetup } from '../game/world';
 import type { RunRewards } from '../meta/economy';
 import type { SaveData } from '../meta/save';
-import { costumeImg, iconImg, type IconId } from '../render/icons';
-import { Renderer } from '../render/renderer';
+import { costumeImg, hasIcon, iconImg, type IconId } from '../render/icons';
+import { BattleView, type Gfx } from '../render/view';
 import { audio } from './audio';
+import { confetti } from './confetti';
 import { h, modal } from './dom';
 
 const RARITY_NAME = { common: 'Common', rare: 'Rare', epic: 'Epic', legendary: 'Legendary', mythic: 'Mythic' } as const;
+const RARITY_RANK = { common: 0, rare: 1, epic: 2, legendary: 3, mythic: 4 } as const;
 
 export interface RunHooks {
   /** Bank the finished run; returns what was earned. */
@@ -29,7 +31,7 @@ export interface RunHooks {
 function cardIcon(card: OfferedCard): IconId {
   if (card.def.bargain) return 'p_bomb';
   if (card.def.weapon) return card.def.weapon;
-  return card.def.id as IconId;
+  return hasIcon(card.def.id) ? card.def.id : 'virus';
 }
 
 function cardTag(card: OfferedCard): string | null {
@@ -43,10 +45,8 @@ function cardTag(card: OfferedCard): string | null {
 export class RunScreen {
   readonly el: HTMLDivElement;
   readonly world: World;
-  private readonly renderer: Renderer;
+  private readonly view: BattleView;
   private readonly hooks: RunHooks;
-  private readonly canvas: HTMLCanvasElement;
-  private readonly under: HTMLCanvasElement;
   private readonly hudTop: HTMLDivElement;
   private readonly hudBottom: HTMLDivElement;
   private readonly slots: HTMLDivElement;
@@ -80,8 +80,9 @@ export class RunScreen {
   constructor(parent: Element, setup: RunSetup, hooks: RunHooks) {
     this.hooks = hooks;
     this.world = new World(setup);
-    this.canvas = h('canvas');
-    this.under = h('canvas');
+    const gfxParam = new URLSearchParams(location.search).get('gfx');
+    const gfx = (gfxParam === 'low' || gfxParam === 'high' || gfxParam === 'auto' ? gfxParam : hooks.settings.gfx) as Gfx;
+    this.view = new BattleView(gfx);
     const stage = this.world.stage;
     const settings = hooks.settings;
     this.liquid = h('div', { class: 'liquid' });
@@ -119,13 +120,12 @@ export class RunScreen {
     );
     this.slots = h('div', { class: 'slots' });
     this.hudBottom = h('div', { class: 'hud-bottom' }, this.aimBtn, this.slots, this.ultBtn);
-    this.el = h('div', { class: 'run' }, this.under, this.canvas, this.hudTop, this.hudBottom, this.perfEl);
+    this.el = h('div', { class: 'run' }, this.view.el, this.hudTop, this.hudBottom, this.perfEl);
     parent.append(this.el);
 
     // `?debug` exposes the live world for browser automation and poking around.
-    this.renderer = new Renderer(this.canvas, this.under);
-    if (new URLSearchParams(location.search).has('debug')) Object.assign(window, { __world: this.world, __renderer: this.renderer });
-    this.renderer.setShowNumbers(settings.numbers);
+    if (new URLSearchParams(location.search).has('debug')) Object.assign(window, { __world: this.world, __renderer: this.view.renderer, __view: this.view });
+    this.view.renderer.setShowNumbers(settings.numbers);
     this.syncSpeed();
     this.syncAim();
     this.bindInput();
@@ -150,14 +150,14 @@ export class RunScreen {
   private layout(): void {
     const top = this.hudTop.getBoundingClientRect().bottom;
     const bottom = window.innerHeight - this.hudBottom.getBoundingClientRect().top;
-    this.renderer.resize({ top, bottom });
+    this.view.resize({ top, bottom });
   }
 
   private bindInput(): void {
-    const c = this.canvas;
+    const c = this.view.input;
     let active: number | null = null;
     const send = (e: PointerEvent, phase: 'down' | 'move' | 'up') => {
-      const p = this.renderer.toField(e.clientX, e.clientY);
+      const p = this.view.renderer.toField(e.clientX, e.clientY);
       this.world.pointer(p.x, p.y, phase);
     };
     c.addEventListener('pointerdown', (e) => {
@@ -185,8 +185,10 @@ export class RunScreen {
     const dt = Math.min(0.1, (now - this.last) / 1000);
     this.last = now;
     const w = this.world;
+    const timeScale = this.paused ? 1 : this.view.tick(dt);
+    this.view.trackFrame(dt);
     if (!this.paused && w.state === 'playing') {
-      this.acc += dt * this.hooks.settings.speed;
+      this.acc += dt * this.hooks.settings.speed * timeScale;
       let steps = 0;
       while (this.acc >= SIM_DT && steps < 20) {
         w.step(SIM_DT);
@@ -196,13 +198,13 @@ export class RunScreen {
       }
       if (steps === 20 || w.state !== 'playing') this.acc = 0;
     } else if (w.state === 'won' || w.state === 'lost') {
-      // keep effects animating on the end screen
-      w.fx.update(dt);
+      // keep effects animating on the end screen (in slow motion right after a win)
+      w.fx.update(dt * timeScale);
     }
     audio.intensity = w.danger;
     this.drainEvents();
     this.syncState();
-    this.renderer.render(w);
+    this.view.render(w);
     this.updateHud();
     if (this.perfEl) this.trackPerf(now, performance.now() - t0);
     this.raf = requestAnimationFrame(this.frame);
@@ -226,6 +228,7 @@ export class RunScreen {
 
   private drainEvents(): void {
     for (const e of this.world.events) {
+      this.view.event(e, this.world);
       switch (e.type) {
         case 'kill':
           audio.play('pop');
@@ -255,7 +258,14 @@ export class RunScreen {
           audio.play('lose');
           break;
         case 'mutation':
-          this.banner(`Mutation ${roman(e.tier)}`, e.tier === 3 ? 'Tougher and faster. You can carry one more weapon.' : 'The virus grows tougher and faster');
+          this.banner(
+            `Mutation ${roman(e.tier)}`,
+            e.tier === 2
+              ? 'Tougher and faster. Chests now offer four cards.'
+              : e.tier === 3
+                ? 'Tougher and faster. You can carry one more weapon.'
+                : 'The virus grows tougher and faster',
+          );
           audio.play('elite');
           break;
         case 'offer':
@@ -365,10 +375,10 @@ export class RunScreen {
     audio.play('pick');
     const cards = h(
       'div',
-      { class: 'cards' },
+      { class: `cards${offer.length > 3 ? ' four' : ''}` },
       ...offer.map((card, i) => {
         const tag = cardTag(card);
-        return h(
+        const el = h(
           'button',
           {
             class: `card ${card.rarity}${card.def.evo ? ' evo' : ''}${card.def.bargain ? ' bargain' : ''}`,
@@ -384,12 +394,14 @@ export class RunScreen {
           h('div', { class: 'cdesc', text: card.def.desc(card.value) }),
           h('div', { class: 'crarity', text: RARITY_NAME[card.rarity] }),
         );
+        tilt(el);
+        return el;
       }),
     );
     const reroll = h('button', {
-      class: 'pill ghost',
-      text: w.rerolls > 0 ? `Reroll (${w.rerolls})` : 'No rerolls',
-      disabled: w.rerolls <= 0,
+      class: `pill ghost${w.freeReroll ? ' free' : ''}`,
+      text: w.freeReroll ? 'Free reroll' : w.rerolls > 0 ? `Reroll (${w.rerolls})` : 'No rerolls',
+      disabled: !w.canReroll,
       onclick: () => {
         if (w.reroll()) {
           audio.play('tap');
@@ -400,7 +412,7 @@ export class RunScreen {
     });
     const takeAll = h('button', {
       class: 'pill gold',
-      text: w.takeAlls > 0 ? `Take all 3 (${w.takeAlls})` : 'No take-alls',
+      text: w.takeAlls > 0 ? `Take all ${offer.length} (${w.takeAlls})` : 'No take-alls',
       disabled: w.takeAlls <= 0,
       onclick: () => {
         if (w.takeAll()) {
@@ -413,14 +425,22 @@ export class RunScreen {
     const hint =
       w.offerRerolls > 0
         ? `Reroll ${w.offerRerolls}: rarer cards are more likely now`
-        : 'Each reroll makes rarer cards more likely';
-    this.overlay = modal(
+        : 'The first reroll of every chest is free, and each reroll makes rarer cards more likely';
+    const overlay = modal(
       this.el,
       h('div', { class: 'banner', text: title }),
       cards,
       h('p', { class: 'pick-hint', text: hint }),
       h('div', { class: 'row center pick-actions' }, reroll, takeAll),
     );
+    this.overlay = overlay;
+    overlay.el.classList.add('pick', 'arming');
+    // Taps that were meant for the battlefield shouldn't pick a card nobody has seen yet.
+    setTimeout(() => overlay.el.classList.remove('arming'), 480);
+    if (w.offerElite) overlay.el.classList.add('elite');
+    // the best card in the hand sets the mood of the light behind it
+    const best = offer.reduce((m, c) => Math.max(m, RARITY_RANK[c.rarity]), 0);
+    overlay.el.dataset.best = (['common', 'rare', 'epic', 'legendary', 'mythic'] as const)[best];
   }
 
   private showRevive(): void {
@@ -482,7 +502,7 @@ export class RunScreen {
         }),
         toggle('Damage numbers', 'g_crit', () => settings.numbers, (v) => {
           settings.numbers = v;
-          this.renderer.setShowNumbers(v);
+          this.view.renderer.setShowNumbers(v);
         }),
         toggle('Manual aim: touch the train to target', 'crosshair', () => w.aimMode === 'manual', (v) => this.toggleAim(v ? 'manual' : 'auto')),
         h(
@@ -512,7 +532,9 @@ export class RunScreen {
     if (w.powerDealt > 0) rows.push({ icon: iconImg('p_bomb'), dealt: w.powerDealt });
     rows.sort((a, b) => b.dealt - a.dealt);
     const total = rows.reduce((a, r) => a + r.dealt, 0) || 1;
-    const loot: HTMLElement[] = [h('div', { class: 'item' }, iconImg('coin'), h('span', { class: 'num', text: `+${fmt(rewards.coins)}` }))];
+    const coinsEl = h('span', { class: 'num', text: '+0' });
+    countUp(coinsEl, rewards.coins);
+    const loot: HTMLElement[] = [h('div', { class: 'item' }, iconImg('coin'), coinsEl)];
     for (const [id, n] of Object.entries(rewards.shards) as [WeaponId, number][]) {
       loot.push(h('div', { class: 'item', title: `${WEAPONS[id].name} shards` }, iconImg(id), h('span', { class: 'num', text: `+${n}` })));
     }
@@ -529,12 +551,14 @@ export class RunScreen {
       : rewards.won
         ? `${w.stage.name} wiped out in ${Math.round(w.time)}s`
         : `You cleared ${pct(rewards.progress)} of the train`;
+    const great = rewards.won || !!rewards.newBest;
+    if (great) setTimeout(() => confetti(), 250);
     this.overlay = modal(
       this.el,
       h(
         'div',
-        { class: 'panel' },
-        h('p', { class: `result-head ${rewards.won || rewards.newBest ? 'win' : 'lose'}`, text: head }),
+        { class: 'panel results' },
+        h('p', { class: `result-head ${great ? 'win' : 'lose'}`, text: head }),
         h('p', { text: sub }),
         ...notes.map((n) => h('p', { style: 'color: var(--lime); font-weight: 600', text: n })),
         h('div', { class: 'loot' }, ...loot),
@@ -555,6 +579,41 @@ export class RunScreen {
       ),
     );
   }
+}
+
+/** Cards lean toward the pointer and their foil catches the light. */
+function tilt(card: HTMLElement): void {
+  card.addEventListener('pointermove', (e) => {
+    const r = card.getBoundingClientRect();
+    const x = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+    const y = Math.min(1, Math.max(0, (e.clientY - r.top) / r.height));
+    card.style.setProperty('--mx', `${(x * 100).toFixed(1)}%`);
+    card.style.setProperty('--my', `${(y * 100).toFixed(1)}%`);
+    const dx = x - 0.5;
+    const dy = y - 0.5;
+    const mag = Math.hypot(dx, dy);
+    card.style.rotate = mag > 0.01 ? `${(-dy).toFixed(3)} ${dx.toFixed(3)} 0 ${(mag * 24).toFixed(1)}deg` : '';
+    card.classList.add('lit');
+  });
+  card.addEventListener('pointerleave', () => {
+    card.style.rotate = '';
+    card.classList.remove('lit');
+  });
+}
+
+/** Tick a number up from zero, easing out. */
+function countUp(el: HTMLElement, to: number, ms = 1100): void {
+  if (to <= 0 || matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    el.textContent = `+${fmt(to)}`;
+    return;
+  }
+  const t0 = performance.now() + 300;
+  const step = (now: number) => {
+    const k = Math.min(1, Math.max(0, (now - t0) / ms));
+    el.textContent = `+${fmt(Math.round(to * (1 - Math.pow(1 - k, 3))))}`;
+    if (k < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
 }
 
 function roman(n: number): string {

@@ -1,9 +1,11 @@
 import { hashSeed } from '../core/rng';
-import { endlessDef, stageDef } from '../game/stage';
+import { endlessDef, stageDef, type ThemeId } from '../game/stage';
+import { PALETTES } from '../game/themes';
 import type { WeaponId } from '../game/types';
 import { costumeUnlocked, endlessUnlocked, heroStats, settleRun } from '../meta/economy';
 import { loadSave, writeSave, type SaveData } from '../meta/save';
 import { audio } from './audio';
+import { Backdrop } from './backdrop';
 import { HomeScreen, type Tab } from './home';
 import { RunScreen } from './run';
 
@@ -14,6 +16,8 @@ export class App {
   private home: HomeScreen | null = null;
   private run: RunScreen | null = null;
   private tab: Tab = 'battle';
+  private backdrop: Backdrop | null = null;
+  private theme: ThemeId = 'slate';
 
   constructor(root: HTMLElement) {
     this.root = root;
@@ -30,6 +34,18 @@ export class App {
 
   private persist(): void {
     writeSave(this.save);
+  }
+
+  /** The live specimen behind the menus, unless graphics are set to low. */
+  private applyGfx(): void {
+    const want = this.save.settings.gfx !== 'low' && !this.run;
+    if (want && !this.backdrop) this.backdrop = Backdrop.create(PALETTES[this.theme].stain);
+    if (want && this.backdrop?.alive) {
+      if (!this.backdrop.el.isConnected) this.backdrop.show(this.root);
+    } else {
+      this.backdrop?.hide();
+    }
+    this.home?.el.classList.toggle('live', !!this.backdrop?.el.isConnected);
   }
 
   private applyAudio(): void {
@@ -55,6 +71,11 @@ export class App {
         this.showHome();
       },
       applyAudio: () => this.applyAudio(),
+      applyGfx: () => this.applyGfx(),
+      setTheme: (theme) => {
+        this.theme = theme;
+        this.backdrop?.setStain(PALETTES[theme].stain);
+      },
       startRun: () => this.startRun(),
       get tab() {
         return app.tab;
@@ -63,6 +84,7 @@ export class App {
         this.tab = tab;
       },
     });
+    this.applyGfx();
   }
 
   private startRun(): void {
@@ -74,6 +96,7 @@ export class App {
     if (!costumeUnlocked(save, save.costume)) save.costume = 'classic';
     this.home?.destroy();
     this.home = null;
+    this.backdrop?.hide();
     this.run = new RunScreen(
       this.root,
       {

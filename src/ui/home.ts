@@ -32,6 +32,10 @@ export interface HomeHooks {
   replaceSave(save: SaveData): void;
   /** Push the save's audio settings to the audio engine. */
   applyAudio(): void;
+  /** Re-apply the graphics setting (the live menu backdrop). */
+  applyGfx(): void;
+  /** Tint the menu backdrop with a chapter's stain. */
+  setTheme(theme: ThemeId): void;
   startRun(): void;
   tab: Tab;
   setTab(tab: Tab): void;
@@ -142,6 +146,7 @@ export class HomeScreen {
     if (sel.difficulty === 'hard' && !normal.cleared) sel.difficulty = 'normal';
     const stage = stageDef(sel.chapter, sel.difficulty);
     const rec = stageRecord(save, sel.chapter, sel.difficulty);
+    this.hooks.setTheme(stage.theme);
 
     const lens = h('div', { class: 'lens', style: `background:${PALETTES[stage.theme].floor}` }, this.headCanvas(stage.theme));
     const go = (d: number) => {
@@ -247,6 +252,7 @@ export class HomeScreen {
 
   private renderEndless(modes: HTMLElement): void {
     const save = this.save;
+    this.hooks.setTheme('violet');
     const slide = h(
       'div',
       { class: 'slide' },
@@ -542,6 +548,38 @@ export class HomeScreen {
 
   // -------------------------------------------------------------- settings
 
+  /** Auto / High / Low graphics, with a line saying what the choice does. */
+  private gfxRow(): HTMLElement {
+    const save = this.save;
+    const NOTE = {
+      auto: 'Full lighting, scaled back if your device starts to struggle.',
+      high: 'Full lighting, bloom and shockwaves, always.',
+      low: 'No lighting effects. Best for older phones and long play on battery.',
+    } as const;
+    const note = h('p', { class: 'gfx-note' });
+    const seg = h('div', { class: 'segmented small' });
+    const sync = () => {
+      note.textContent = NOTE[save.settings.gfx];
+      seg.replaceChildren(
+        ...(['auto', 'high', 'low'] as const).map((g) =>
+          h('button', {
+            class: save.settings.gfx === g ? 'on' : '',
+            text: g === 'auto' ? 'Auto' : g === 'high' ? 'High' : 'Low',
+            onclick: () => {
+              audio.play('tap');
+              save.settings.gfx = g;
+              this.hooks.persist();
+              this.hooks.applyGfx();
+              sync();
+            },
+          }),
+        ),
+      );
+    };
+    sync();
+    return h('div', { class: 'gfx-row' }, h('div', { class: 'toggle' }, h('span', { text: 'Graphics' }), seg), note);
+  }
+
   private openSettings(): void {
     audio.play('tap');
     const save = this.save;
@@ -609,6 +647,7 @@ export class HomeScreen {
         ),
         toggle('Damage numbers', () => save.settings.numbers, (v) => (save.settings.numbers = v)),
         toggle('Manual aim: touch the train to target', () => save.settings.aim === 'manual', (v) => (save.settings.aim = v ? 'manual' : 'auto')),
+        this.gfxRow(),
         h('h2', { style: 'margin-top:14px', text: 'Backup' }),
         h('p', { text: 'Your progress lives on this device. Copy the code somewhere safe, or paste one to move progress between devices.' }),
         h(

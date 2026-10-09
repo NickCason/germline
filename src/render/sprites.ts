@@ -35,7 +35,11 @@ export class ThemeSprites {
   readonly flash: Sprite;
   readonly chest: Sprite;
   readonly elite: Sprite;
+  /** Head body and spikes; the face is drawn live so it can blink and chomp. */
   readonly head: Sprite;
+  readonly crack1: Sprite;
+  readonly crack2: Sprite;
+  readonly splat: Sprite;
   readonly palette: Palette;
 
   constructor(theme: ThemeId, k: number) {
@@ -51,7 +55,86 @@ export class ThemeSprites {
     this.chest = chest(k, false);
     this.elite = chest(k, true);
     this.head = virusHead(p, k);
+    this.crack1 = cracks(p, k, 1);
+    this.crack2 = cracks(p, k, 2);
+    this.splat = splat(p, k);
   }
+}
+
+/** Fracture lines that appear as a segment loses HP. */
+function cracks(p: Palette, k: number, level: number): Sprite {
+  const R = SEG_RADIUS;
+  return makeSprite(R * 2, R * 2, k, (g) => {
+    g.strokeStyle = p.bodyDark;
+    g.lineWidth = 2;
+    g.lineCap = 'round';
+    g.lineJoin = 'round';
+    const lines: [number, number][][] = [
+      [
+        [-14, -10],
+        [-6, -4],
+        [-9, 4],
+        [-2, 10],
+      ],
+      [
+        [12, -14],
+        [6, -6],
+        [12, 2],
+      ],
+    ];
+    if (level > 1) {
+      lines.push(
+        [
+          [-18, 6],
+          [-10, 8],
+          [-6, 18],
+        ],
+        [
+          [4, 4],
+          [10, 10],
+          [16, 8],
+        ],
+        [
+          [-2, -18],
+          [0, -10],
+          [-4, -4],
+        ],
+      );
+    }
+    for (const line of lines) {
+      g.beginPath();
+      line.forEach(([x, y], i) => (i ? g.lineTo(x, y) : g.moveTo(x, y)));
+      g.stroke();
+    }
+  });
+}
+
+/** A gooey stain left where a segment burst. */
+function splat(p: Palette, k: number): Sprite {
+  return makeSprite(96, 96, k, (g) => {
+    g.fillStyle = p.body;
+    g.globalAlpha = 0.5;
+    g.beginPath();
+    const n = 14;
+    for (let i = 0; i <= n; i++) {
+      const a = (i / n) * Math.PI * 2;
+      const r = 24 + (i % 3 === 0 ? 12 : i % 2 === 0 ? 4 : 8);
+      g.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+    }
+    g.closePath();
+    g.fill();
+    for (let i = 0; i < 7; i++) {
+      const a = (i / 7) * Math.PI * 2 + 0.4;
+      g.beginPath();
+      g.arc(Math.cos(a) * 38, Math.sin(a) * 38, 4 + (i % 3) * 2, 0, Math.PI * 2);
+      g.fill();
+    }
+    g.globalAlpha = 0.35;
+    g.fillStyle = p.bodyLight;
+    g.beginPath();
+    g.arc(-6, -6, 12, 0, Math.PI * 2);
+    g.fill();
+  });
 }
 
 function ring(p: Palette, k: number, alt: boolean): Sprite {
@@ -64,6 +147,27 @@ function ring(p: Palette, k: number, alt: boolean): Sprite {
     g.fillStyle = grad;
     g.beginPath();
     g.arc(0, 0, R, 0, Math.PI * 2);
+    g.fill();
+    // fluorescent rim light along the lower edge, in the stain's colour
+    g.save();
+    g.beginPath();
+    g.arc(0, 0, R, 0, Math.PI * 2);
+    g.clip();
+    const rim = g.createRadialGradient(R * 0.45, R * 0.55, R * 0.2, R * 0.45, R * 0.55, R * 1.1);
+    rim.addColorStop(0, 'rgba(0,0,0,0)');
+    rim.addColorStop(0.75, 'rgba(0,0,0,0)');
+    rim.addColorStop(1, p.rim);
+    g.globalAlpha = 0.55;
+    g.fillStyle = rim;
+    g.fillRect(-R, -R, R * 2, R * 2);
+    g.restore();
+    // glowing nucleus
+    const nuc = g.createRadialGradient(R * 0.12, R * 0.1, 0, R * 0.12, R * 0.1, R * 0.42);
+    nuc.addColorStop(0, 'rgba(255,255,255,0.55)');
+    nuc.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = nuc;
+    g.beginPath();
+    g.arc(R * 0.12, R * 0.1, R * 0.42, 0, Math.PI * 2);
     g.fill();
     // a soft rib line; overlapping rings turn these into a segmented body
     g.lineWidth = 1.6;
@@ -132,7 +236,7 @@ function chest(k: number, elite: boolean): Sprite {
   });
 }
 
-/** A spiky, furious virus; faces right. */
+/** A spiky virus body (no face; the renderer draws an animated one on top). */
 function virusHead(p: Palette, k: number): Sprite {
   const R = 36;
   return makeSprite(R * 2 + 36, R * 2 + 36, k, (g) => {
@@ -173,48 +277,17 @@ function virusHead(p: Palette, k: number): Sprite {
     g.arc(0, 0, R, 0, Math.PI * 2);
     g.fill();
     g.stroke();
-    // face, nudged toward the direction of travel
-    const fx = 7;
-    g.fillStyle = '#ffffff';
-    g.strokeStyle = INK;
-    g.lineWidth = 2.5;
-    for (const ex of [-11, 11]) {
-      g.beginPath();
-      g.ellipse(fx + ex, -6, 8, 9.5, 0, 0, Math.PI * 2);
-      g.fill();
-      g.stroke();
-      g.fillStyle = INK;
-      g.beginPath();
-      g.arc(fx + ex + 3, -4, 4.2, 0, Math.PI * 2);
-      g.fill();
-      g.fillStyle = '#ffffff';
-    }
-    // angry brows
-    g.lineWidth = 4.5;
-    g.beginPath();
-    g.moveTo(fx - 20, -20);
-    g.lineTo(fx - 5, -14);
-    g.moveTo(fx + 20, -20);
-    g.lineTo(fx + 5, -14);
-    g.stroke();
-    // snarling mouth with fangs
-    g.fillStyle = '#3a0d18';
-    g.lineWidth = 2.5;
-    roundRect(g, fx - 12, 9, 24, 12, 6);
-    g.fill();
-    g.stroke();
-    g.fillStyle = '#ffffff';
-    g.beginPath();
-    g.moveTo(fx - 8, 10);
-    g.lineTo(fx - 4, 10);
-    g.lineTo(fx - 6, 16);
-    g.closePath();
-    g.moveTo(fx + 4, 10);
-    g.lineTo(fx + 8, 10);
-    g.lineTo(fx + 6, 16);
-    g.closePath();
-    g.fill();
+    g.save();
+    g.clip();
+    const rim = g.createRadialGradient(R * 0.4, R * 0.5, R * 0.3, R * 0.4, R * 0.5, R * 1.1);
+    rim.addColorStop(0.7, 'rgba(0,0,0,0)');
+    rim.addColorStop(1, p.rim);
+    g.globalAlpha = 0.6;
+    g.fillStyle = rim;
+    g.fillRect(-R, -R, R * 2, R * 2);
+    g.restore();
     g.globalAlpha = 0.5;
+    g.fillStyle = '#ffffff';
     g.beginPath();
     g.ellipse(-R * 0.45, -R * 0.5, 8, 5, -0.6, 0, Math.PI * 2);
     g.fill();

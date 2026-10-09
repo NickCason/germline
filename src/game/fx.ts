@@ -42,6 +42,25 @@ export interface Bolt {
   max: number;
 }
 
+/** A stain left on the floor where a segment burst; fades slowly. */
+export interface Decal {
+  x: number;
+  y: number;
+  r: number;
+  rot: number;
+  color: string;
+  life: number;
+  max: number;
+}
+
+/** A needle left sticking out of a segment for a moment. */
+export interface Pin {
+  x: number;
+  y: number;
+  a: number;
+  life: number;
+}
+
 const MAX_NUMBERS = 48;
 const MAX_PARTICLES = 420;
 
@@ -56,6 +75,8 @@ export class Fx {
   particles: Particle[] = [];
   rings: Ring[] = [];
   bolts: Bolt[] = [];
+  decals: Decal[] = [];
+  pins: Pin[] = [];
   shake = 0;
   /** Full-screen flash intensity (0..1), decays quickly. */
   flash = 0;
@@ -102,6 +123,13 @@ export class Fx {
       });
     }
     this.ring(x, y, 34, 'rgba(255,255,255,0.8)');
+    if (this.decals.length >= 60) this.decals.shift();
+    this.decals.push({ x, y, r: this.rng.range(26, 40), rot: this.rng.range(0, Math.PI * 2), color: colors[1], life: 6, max: 6 });
+  }
+
+  pin(x: number, y: number, a: number): void {
+    if (!this.enabled || this.pins.length > 40) return;
+    this.pins.push({ x: x + this.rng.range(-8, 8), y: y + this.rng.range(-8, 8), a, life: 0.55 });
   }
 
   burst(x: number, y: number, color: string, n: number): void {
@@ -200,6 +228,18 @@ export class Fx {
       if (b.life > 0) this.bolts[j++] = b;
     }
     this.bolts.length = j;
+    j = 0;
+    for (const d of this.decals) {
+      d.life -= dt;
+      if (d.life > 0) this.decals[j++] = d;
+    }
+    this.decals.length = j;
+    j = 0;
+    for (const p of this.pins) {
+      p.life -= dt;
+      if (p.life > 0) this.pins[j++] = p;
+    }
+    this.pins.length = j;
   }
 
   private add(p: Particle): void {

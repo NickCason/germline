@@ -68,6 +68,13 @@ export const COIN_GROWTH = 1.35;
  * tough; this keeps the total fight comparable to a single long train.
  */
 export const TWIN_HP = 2.6;
+/** The spiral keeps the whole train close to the hero for the entire run, so it gets softer segments. */
+export const SPIRAL_HP = 0.72;
+
+/** How a layout scales segment HP to keep fights on every layout comparable. */
+export function layoutHp(kind: LayoutKind): number {
+  return isTwin(kind) ? TWIN_HP : kind === 'spiral' ? SPIRAL_HP : 1;
+}
 
 export function stageDef(chapter: number, difficulty: Difficulty): StageDef {
   const c = Math.max(1, Math.floor(chapter));
@@ -83,7 +90,7 @@ export function stageDef(chapter: number, difficulty: Difficulty): StageDef {
     layout: layoutFor(c),
     segments: Math.min(100 + (c - 1) * 3, 160),
     crossTime: 104,
-    hpScale: Math.pow(HP_GROWTH, c - 1) * (hard ? HARD_HP : 1) * (isTwin(layoutFor(c)) ? TWIN_HP : 1),
+    hpScale: Math.pow(HP_GROWTH, c - 1) * (hard ? HARD_HP : 1) * layoutHp(layoutFor(c)),
     coinMult: Math.pow(COIN_GROWTH, c - 1) * (hard ? 2.5 : 1),
   };
 }
@@ -147,7 +154,7 @@ export function endlessDef(maxChapter: number, seed: number): StageDef {
     layout,
     segments: Infinity,
     crossTime: 100,
-    hpScale: Math.pow(HP_GROWTH, level) * (isTwin(layout) ? TWIN_HP : 1),
+    hpScale: Math.pow(HP_GROWTH, level) * layoutHp(layout),
     coinMult: Math.pow(COIN_GROWTH, level) * 0.7,
     endless: true,
   };

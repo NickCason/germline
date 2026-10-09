@@ -14,6 +14,13 @@ export interface Palette {
   horn: string;
   /** Particle colours when a segment pops. */
   pop: string[];
+  /**
+   * Fluorescence-microscopy stain for the living background (0..1 RGB):
+   * deep and mid fluid tones, and the glow of membranes and motes.
+   */
+  stain: { name: string; deep: [number, number, number]; mid: [number, number, number]; glow: [number, number, number] };
+  /** Rim light on the train, in the stain's colour. */
+  rim: string;
 }
 
 export const PALETTES: Record<ThemeId, Palette> = {
@@ -30,6 +37,8 @@ export const PALETTES: Record<ThemeId, Palette> = {
     headDark: '#3a1f17',
     horn: '#ecc77d',
     pop: ['#f6bfae', '#d98b7b', '#ffe3d8'],
+    stain: { name: 'DAPI', deep: [0.025, 0.03, 0.09], mid: [0.06, 0.08, 0.2], glow: [0.38, 0.5, 1.0] },
+    rim: '#8fa4ff',
   },
   crimson: {
     floor: '#5b2229',
@@ -44,6 +53,8 @@ export const PALETTES: Record<ThemeId, Palette> = {
     headDark: '#5e2335',
     horn: '#ffd166',
     pop: ['#ffffff', '#cdeae4', '#97c6be'],
+    stain: { name: 'mCherry', deep: [0.08, 0.015, 0.035], mid: [0.19, 0.04, 0.08], glow: [1.0, 0.3, 0.45] },
+    rim: '#ff7a92',
   },
   swamp: {
     floor: '#253a2e',
@@ -58,6 +69,8 @@ export const PALETTES: Record<ThemeId, Palette> = {
     headDark: '#2c1745',
     horn: '#a2e66f',
     pop: ['#e2ccff', '#b78ce2', '#a2e66f'],
+    stain: { name: 'GFP', deep: [0.015, 0.06, 0.04], mid: [0.04, 0.15, 0.09], glow: [0.35, 1.0, 0.55] },
+    rim: '#7dffa6',
   },
   violet: {
     floor: '#2f2546',
@@ -72,6 +85,8 @@ export const PALETTES: Record<ThemeId, Palette> = {
     headDark: '#4f1f0b',
     horn: '#fff0b3',
     pop: ['#ffd6a8', '#f3a85c', '#fff0b3'],
+    stain: { name: 'Cy5', deep: [0.05, 0.025, 0.1], mid: [0.13, 0.05, 0.22], glow: [0.82, 0.42, 1.0] },
+    rim: '#d69bff',
   },
   ice: {
     floor: '#1f3b46',
@@ -86,6 +101,8 @@ export const PALETTES: Record<ThemeId, Palette> = {
     headDark: '#16354a',
     horn: '#ffffff',
     pop: ['#e4f7ff', '#93d6f5', '#ffffff'],
+    stain: { name: 'Alexa 488', deep: [0.015, 0.05, 0.08], mid: [0.03, 0.13, 0.19], glow: [0.3, 0.88, 1.0] },
+    rim: '#8ff0ff',
   },
   amber: {
     floor: '#3e3121',
@@ -100,5 +117,7 @@ export const PALETTES: Record<ThemeId, Palette> = {
     headDark: '#1f3a10',
     horn: '#ffb347',
     pop: ['#d6ffb4', '#9fe36e', '#ffb347'],
+    stain: { name: 'YFP', deep: [0.07, 0.05, 0.015], mid: [0.17, 0.12, 0.035], glow: [1.0, 0.8, 0.3] },
+    rim: '#ffe08a',
   },
 };

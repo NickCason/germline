@@ -42,7 +42,13 @@ export type IconId =
   | 'crosshair'
   | 'auto'
   | 'music'
-  | 'speaker';
+  | 'speaker'
+  | 'm_apex'
+  | 'm_mito'
+  | 'm_poly'
+  | 'm_heart'
+  | 'm_contagion'
+  | 'm_symbiosis';
 
 type Draw = (g: CanvasRenderingContext2D) => void;
 
@@ -66,6 +72,11 @@ function render(key: string, px: number, draw: Draw, box = 64): HTMLCanvasElemen
 }
 
 /** The icon as a canvas, for drawing inside the game canvas. */
+/** Whether an id (say, a card id) has its own icon. */
+export function hasIcon(id: string): id is IconId {
+  return Object.prototype.hasOwnProperty.call(DRAW, id);
+}
+
 export function iconCanvas(id: IconId, px = 64): HTMLCanvasElement {
   return render(`${id}@${px}`, px, DRAW[id]);
 }
@@ -787,6 +798,160 @@ const DRAW: Record<IconId, Draw> = {
     g.beginPath();
     g.arc(0, 6, 4, 0, Math.PI * 2);
     g.fill();
+  },
+  // ---- mythic cards
+  m_apex: (g) => {
+    // a crown with fangs for points
+    g.beginPath();
+    g.moveTo(-26, 16);
+    g.lineTo(-26, -8);
+    g.lineTo(-14, 4);
+    g.lineTo(-7, -20);
+    g.lineTo(0, 0);
+    g.lineTo(7, -20);
+    g.lineTo(14, 4);
+    g.lineTo(26, -8);
+    g.lineTo(26, 16);
+    g.closePath();
+    const grad = g.createLinearGradient(0, -20, 0, 16);
+    grad.addColorStop(0, '#fff3b0');
+    grad.addColorStop(1, '#ffb020');
+    g.fillStyle = grad;
+    g.fill();
+    outline(g);
+    g.fillStyle = '#ff4fd8';
+    for (const x of [-14, 0, 14]) {
+      g.beginPath();
+      g.arc(x, 9, 4, 0, Math.PI * 2);
+      g.fill();
+      outline(g, 2);
+    }
+    g.fillStyle = '#ffffff';
+    for (const x of [-12, 12]) {
+      g.beginPath();
+      g.moveTo(x - 4, 16);
+      g.lineTo(x, 26);
+      g.lineTo(x + 4, 16);
+      g.closePath();
+      g.fill();
+      outline(g, 2);
+    }
+  },
+  m_mito: (g) => {
+    // a mitochondrion: bean-shaped with folded cristae inside
+    g.save();
+    g.rotate(-0.4);
+    g.beginPath();
+    g.ellipse(0, 0, 28, 17, 0, 0, Math.PI * 2);
+    g.fillStyle = '#ff8a5c';
+    g.fill();
+    outline(g);
+    g.beginPath();
+    g.ellipse(0, 0, 21, 11, 0, 0, Math.PI * 2);
+    g.fillStyle = '#ffd0a8';
+    g.fill();
+    g.beginPath();
+    g.moveTo(-19, 0);
+    for (let i = 0; i <= 8; i++) g.lineTo(-19 + i * 4.75, i % 2 === 0 ? -8 : 8);
+    g.strokeStyle = '#e0452c';
+    g.lineWidth = 3;
+    g.stroke();
+    g.restore();
+    bolt(g, 16, -16, 11, '#ffd34d');
+  },
+  m_poly: (g) => {
+    // three X chromosomes, fanned out
+    const cols = ['#43b6ff', '#ff4fd8', '#b8f04a'];
+    [-16, 0, 16].forEach((x, i) => {
+      g.save();
+      g.translate(x, i === 1 ? -4 : 4);
+      g.rotate((i - 1) * 0.25);
+      g.lineCap = 'round';
+      for (const [w, c] of [
+        [10, INK],
+        [6, cols[i]],
+      ] as const) {
+        g.strokeStyle = c;
+        g.lineWidth = w;
+        g.beginPath();
+        g.moveTo(-6, -17);
+        g.quadraticCurveTo(0, 0, -6, 17);
+        g.moveTo(6, -17);
+        g.quadraticCurveTo(0, 0, 6, 17);
+        g.stroke();
+      }
+      g.fillStyle = '#ffffff';
+      g.beginPath();
+      g.arc(0, 0, 3, 0, Math.PI * 2);
+      g.fill();
+      g.restore();
+    });
+  },
+  m_heart: (g) => {
+    // a second heart tucked behind the first
+    g.save();
+    g.translate(9, -7);
+    g.scale(0.8, 0.8);
+    g.fillStyle = '#ff4fd8';
+    heartPath(g, 24);
+    g.fill();
+    outline(g, 3.5);
+    g.restore();
+    g.save();
+    g.translate(-6, 5);
+    g.scale(0.85, 0.85);
+    heartIcon(g);
+    g.restore();
+  },
+  m_contagion: (g) => {
+    // a bursting segment flinging droplets at its neighbours
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2;
+      g.beginPath();
+      g.arc(Math.cos(a) * 24, Math.sin(a) * 24, i % 2 ? 4 : 6, 0, Math.PI * 2);
+      g.fillStyle = '#9bff6a';
+      g.fill();
+      outline(g, 2);
+    }
+    g.beginPath();
+    for (let i = 0; i <= 16; i++) {
+      const a = (i / 16) * Math.PI * 2;
+      const r = i % 2 ? 11 : 17;
+      g.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+    }
+    g.closePath();
+    g.fillStyle = '#4fd83c';
+    g.fill();
+    outline(g);
+    g.beginPath();
+    g.arc(-3, -3, 4, 0, Math.PI * 2);
+    g.fillStyle = '#e6ffd6';
+    g.fill();
+  },
+  m_symbiosis: (g) => {
+    // two organisms holding on to each other
+    for (const [x, c] of [
+      [-9, '#38e8d2'],
+      [9, '#ff4fd8'],
+    ] as const) {
+      g.beginPath();
+      g.arc(x, 0, 16, 0, Math.PI * 2);
+      g.strokeStyle = INK;
+      g.lineWidth = 11;
+      g.stroke();
+      g.strokeStyle = c;
+      g.lineWidth = 6;
+      g.stroke();
+    }
+    // re-draw a slice of the first ring on top so they interlock
+    g.beginPath();
+    g.arc(-9, 0, 16, -0.5, 0.5);
+    g.strokeStyle = INK;
+    g.lineWidth = 11;
+    g.stroke();
+    g.strokeStyle = '#38e8d2';
+    g.lineWidth = 6;
+    g.stroke();
   },
 };
 

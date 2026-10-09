@@ -728,12 +728,17 @@ export class World {
     return this.offerRerolls > 0 ? this.offerRerolls + this.rerollLuck : 0;
   }
 
+  /** Long endless runs widen every chest to four cards. */
+  get offerSize(): number {
+    return this.stage.endless && this.mutation >= 2 ? 4 : 3;
+  }
+
   private openOffer(): void {
     while (this.pending.length > 0) {
       this.offerElite = this.pending[0] === 'elite';
       this.offerRerolls = 0;
       this.freeReroll = true;
-      const offer = rollCards(this, this.offerElite, 0);
+      const offer = rollCards(this, this.offerElite, 0, this.offerSize);
       if (offer.length > 0) {
         this.offer = offer;
         this.state = 'picking';
@@ -770,7 +775,7 @@ export class World {
     if (this.freeReroll) this.freeReroll = false;
     else this.rerolls--;
     this.offerRerolls++;
-    this.offer = rollCards(this, this.offerElite, this.offerLuck);
+    this.offer = rollCards(this, this.offerElite, this.offerLuck, this.offerSize);
     return true;
   }
 

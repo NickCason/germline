@@ -39,6 +39,8 @@ export interface SaveData {
     /** Game speed multiplier, 1 to 4. */
     speed: number;
     aim: AimMode;
+    /** Graphics: auto steps down on slow devices, high never does, low is plain 2D. */
+    gfx: 'auto' | 'high' | 'low';
   };
   stats: { runs: number; wins: number; kills: number; ults: number; powers: number };
 }
@@ -61,7 +63,7 @@ export function freshSave(): SaveData {
     mode: 'chapters',
     costume: 'classic',
     endlessBest: 0,
-    settings: { sfx: true, sfxVol: 0.8, music: true, musicVol: 0.5, numbers: true, speed: 1, aim: 'auto' },
+    settings: { sfx: true, sfxVol: 0.8, music: true, musicVol: 0.5, numbers: true, speed: 1, aim: 'auto', gfx: 'auto' },
     stats: { runs: 0, wins: 0, kills: 0, ults: 0, powers: 0 },
   };
 }

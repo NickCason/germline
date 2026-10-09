@@ -1,14 +1,19 @@
 import { fmt } from '../core/format';
+import type { Chain, PowerKind, Segment } from '../game/chain';
 import { FIELD_H, FIELD_W, SEG_LEN, SEG_RADIUS } from '../game/constants';
-import type { Segment } from '../game/chain';
+import type { CostumeId } from '../game/costumes';
 import type { ThemeId } from '../game/stage';
 import { PALETTES } from '../game/themes';
-import type { Projectile, Zone } from '../game/types';
 import type { World } from '../game/world';
-import type { Chain, PowerKind } from '../game/chain';
-import type { CostumeId } from '../game/costumes';
+import { drawWeaponLayerAbove, drawWeaponLayerBelow } from './draw-weapons';
+import { beginGlow, endGlow, glow, glowCtx, setGlowTarget } from './glow';
 import { iconCanvas, type IconId } from './icons';
 import { drawSprite, heroSprite, INK, ThemeSprites, type Sprite } from './sprites';
+
+const RING_OFFSETS = [-32, -16, 0, 16, 32];
+const LABEL_FONT = '600 17px "Fredoka Variable", ui-rounded, system-ui, sans-serif';
+const NUM_FONT = '600 14px "Fredoka Variable", ui-rounded, system-ui, sans-serif';
+const CRIT_FONT = '700 20px "Fredoka Variable", ui-rounded, system-ui, sans-serif';
 
 const POWER_STYLE: Record<PowerKind, { icon: IconId; color: string }> = {
   freeze: { icon: 'g_slow', color: '#9fe7ff' },
@@ -19,11 +24,6 @@ const POWER_STYLE: Record<PowerKind, { icon: IconId; color: string }> = {
   coins: { icon: 'coin', color: '#ffc93c' },
 };
 
-const RING_OFFSETS = [-32, -16, 0, 16, 32];
-const LABEL_FONT = '600 17px "Fredoka Variable", ui-rounded, system-ui, sans-serif';
-const NUM_FONT = '600 14px "Fredoka Variable", ui-rounded, system-ui, sans-serif';
-const CRIT_FONT = '700 20px "Fredoka Variable", ui-rounded, system-ui, sans-serif';
-
 export interface Viewport {
   /** CSS pixels reserved at the top / bottom for HUD and safe areas. */
   top: number;
@@ -31,42 +31,60 @@ export interface Viewport {
 }
 
 /**
- * Draws a World onto a full-screen canvas. The 540×960 field is scaled to
- * fit between the reserved HUD areas; the tissue backdrop fills the rest.
+ * Draws a World. In 'gl' mode both canvases are transparent layers that the
+ * WebGL compositor turns into the final frame (background, bloom, warps);
+ * in '2d' mode the under-canvas carries a painted backdrop and the two
+ * canvases are simply stacked.
  */
 export class Renderer {
   readonly canvas: HTMLCanvasElement;
-  /** Static layer under the game canvas: tissue, track groove, defence line. */
-  private readonly under: HTMLCanvasElement;
+  readonly under: HTMLCanvasElement;
+  /** Half-resolution light layer for the compositor's bloom (gl mode only). */
+  readonly emissive: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D;
-  private dpr = 1;
+  private readonly ectx: CanvasRenderingContext2D;
+  mode: 'gl' | '2d';
+  dpr = 1;
   private vw = 0;
   private vh = 0;
   scale = 1;
   ox = 0;
   oy = 0;
+  /** Camera punch (1 = none), set by the run screen on big hits. */
+  zoom = 1;
+  /** Bumps whenever the static layer is redrawn, so the compositor re-uploads it. */
+  staticVersion = 0;
   private sprites: ThemeSprites | null = null;
   private spritesKey = '';
   private backdropFor: World | null = null;
   private numbers = true;
   private readonly tmp = { x: 0, y: 0, a: 0 };
   private heroSprites = new Map<string, Sprite>();
-  /** Contiguous stretches of train this frame, as [startS, endS] pairs. */
   private groups: number[] = [];
+  private lastHeroX = 0;
+  private heroTrail: number[] = [];
 
-  constructor(canvas: HTMLCanvasElement, under: HTMLCanvasElement) {
+  constructor(canvas: HTMLCanvasElement, under: HTMLCanvasElement, mode: 'gl' | '2d') {
     this.canvas = canvas;
     this.under = under;
+    this.mode = mode;
     this.ctx = canvas.getContext('2d')!;
+    this.emissive = document.createElement('canvas');
+    this.ectx = this.emissive.getContext('2d')!;
   }
 
   setShowNumbers(on: boolean): void {
     this.numbers = on;
   }
 
-  resize(view: Viewport): void {
-    // 2x is plenty for chunky cartoon art and saves a lot of fill on 3x phones.
-    this.dpr = Math.min(window.devicePixelRatio || 1, 2);
+  setMode(mode: 'gl' | '2d'): void {
+    if (mode === this.mode) return;
+    this.mode = mode;
+    this.backdropFor = null;
+  }
+
+  resize(view: Viewport, dprCap = 2): void {
+    this.dpr = Math.min(window.devicePixelRatio || 1, dprCap);
     this.vw = window.innerWidth;
     this.vh = window.innerHeight;
     for (const c of [this.canvas, this.under]) {
@@ -75,6 +93,8 @@ export class Renderer {
       c.style.width = `${this.vw}px`;
       c.style.height = `${this.vh}px`;
     }
+    this.emissive.width = Math.round(this.canvas.width / 2);
+    this.emissive.height = Math.round(this.canvas.height / 2);
     const avail = Math.max(200, this.vh - view.top - view.bottom);
     this.scale = Math.min(this.vw / FIELD_W, avail / FIELD_H);
     this.ox = (this.vw - FIELD_W * this.scale) / 2;
@@ -86,6 +106,15 @@ export class Renderer {
   /** Screen (CSS px) → field units. */
   toField(clientX: number, clientY: number): { x: number; y: number } {
     return { x: (clientX - this.ox) / this.scale, y: (clientY - this.oy) / this.scale };
+  }
+
+  /** Field units → canvas pixels (top-left origin), for the compositor. */
+  toCanvasPx(x: number, y: number): { x: number; y: number } {
+    return { x: (this.ox + x * this.scale) * this.dpr, y: (this.oy + y * this.scale) * this.dpr };
+  }
+
+  get pxPerUnit(): number {
+    return this.scale * this.dpr;
   }
 
   render(world: World): void {
@@ -100,18 +129,34 @@ export class Renderer {
     const shake = world.fx.shake;
     const sx = shake ? (Math.random() - 0.5) * shake : 0;
     const sy = shake ? (Math.random() - 0.5) * shake : 0;
-    ctx.setTransform(k, 0, 0, k, (this.ox + sx) * this.dpr, (this.oy + sy) * this.dpr);
+    // Zoom punches toward the middle of the field.
+    const z = this.zoom;
+    const cx = FIELD_W / 2;
+    const cy = FIELD_H / 2;
+    const tx = (this.ox + sx + (1 - z) * cx * this.scale) * this.dpr;
+    const ty = (this.oy + sy + (1 - z) * cy * this.scale) * this.dpr;
+    ctx.setTransform(k * z, 0, 0, k * z, tx, ty);
+    if (this.mode === 'gl') {
+      const e = this.ectx;
+      e.setTransform(1, 0, 0, 1, 0, 0);
+      e.globalCompositeOperation = 'source-over';
+      e.globalAlpha = 1;
+      e.clearRect(0, 0, this.emissive.width, this.emissive.height);
+      e.setTransform(k * z * 0.5, 0, 0, k * z * 0.5, tx * 0.5, ty * 0.5);
+      setGlowTarget(e);
+    } else {
+      setGlowTarget(null);
+    }
 
+    this.drawDecals(world);
     this.drawDanger(world);
-    for (const z of world.zones) this.drawZone(z, world.time);
-    this.drawLasers(world);
-    this.drawChain(world);
+    drawWeaponLayerBelow(ctx, world);
+    for (const chain of world.chains) this.drawTrain(world, chain);
     this.drawReticle(world);
-    for (const p of world.projectiles) this.drawProjectile(p, world.time);
-    this.drawClouds(world);
-    this.drawEffects(world);
+    drawWeaponLayerAbove(ctx, world);
     this.drawHero(world);
     this.drawFx(world);
+    setGlowTarget(null);
   }
 
   // ---------------------------------------------------------------- set-up
@@ -133,78 +178,90 @@ export class Renderer {
     return sp;
   }
 
-  /** Tissue floor, track groove and defence line, cached per run + size. */
+  /**
+   * The static layer: the track groove and the defence line. In 2D mode it
+   * also carries a painted tissue backdrop (the compositor paints a live one).
+   */
   private buildBackdrop(world: World): void {
     const c = this.under;
     const g = c.getContext('2d')!;
-    g.setTransform(1, 0, 0, 1, 0, 0);
     const p = PALETTES[world.stage.theme];
-    g.fillStyle = p.floor;
-    g.fillRect(0, 0, c.width, c.height);
-
-    // Cells of tissue, seeded so the backdrop is stable for the run.
-    let seed = world.stage.chapter * 977 + 13;
-    const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    g.clearRect(0, 0, c.width, c.height);
     const unit = this.dpr * this.scale;
-    const count = Math.round((c.width * c.height) / (unit * unit * 2600));
-    for (let i = 0; i < count; i++) {
-      const x = rnd() * c.width;
-      const y = rnd() * c.height;
-      const r = (16 + rnd() * 26) * unit;
-      g.globalAlpha = 0.5;
-      g.fillStyle = rnd() < 0.5 ? p.floorAlt : p.floor;
-      g.strokeStyle = p.floorLine;
-      g.lineWidth = 2 * unit;
-      g.beginPath();
-      g.ellipse(x, y, r, r * (0.75 + rnd() * 0.3), rnd() * Math.PI, 0, Math.PI * 2);
-      g.fill();
-      g.stroke();
-      g.fillStyle = p.debris;
-      g.globalAlpha = 0.35;
-      g.beginPath();
-      g.arc(x + (rnd() - 0.5) * r * 0.6, y + (rnd() - 0.5) * r * 0.6, r * 0.16, 0, Math.PI * 2);
-      g.fill();
-      g.globalAlpha = 1;
+    if (this.mode === '2d') {
+      g.fillStyle = p.floor;
+      g.fillRect(0, 0, c.width, c.height);
+      let seed = world.stage.chapter * 977 + 13;
+      const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+      const count = Math.round((c.width * c.height) / (unit * unit * 2600));
+      for (let i = 0; i < count; i++) {
+        const x = rnd() * c.width;
+        const y = rnd() * c.height;
+        const r = (16 + rnd() * 26) * unit;
+        g.globalAlpha = 0.5;
+        g.fillStyle = rnd() < 0.5 ? p.floorAlt : p.floor;
+        g.strokeStyle = p.floorLine;
+        g.lineWidth = 2 * unit;
+        g.beginPath();
+        g.ellipse(x, y, r, r * (0.75 + rnd() * 0.3), rnd() * Math.PI, 0, Math.PI * 2);
+        g.fill();
+        g.stroke();
+        g.globalAlpha = 1;
+      }
     }
 
     g.setTransform(unit, 0, 0, unit, this.ox * this.dpr, this.oy * this.dpr);
-    // Faint groove so you can read where the train will go.
-    g.strokeStyle = 'rgba(0,0,0,0.2)';
-    g.lineWidth = SEG_RADIUS * 2 + 8;
+    // The groove: a soft channel with a faint stain-coloured centre line.
     g.lineJoin = 'round';
     g.lineCap = 'round';
-    for (const path of world.layout.paths) {
-      g.beginPath();
-      let first = true;
-      for (const [x, y] of path.points(6)) {
-        if (first) g.moveTo(x, y);
-        else g.lineTo(x, y);
-        first = false;
+    const stain = p.stain.glow;
+    const glowCss = `rgba(${Math.round(stain[0] * 255)},${Math.round(stain[1] * 255)},${Math.round(stain[2] * 255)},`;
+    for (const [w, style] of [
+      [SEG_RADIUS * 2 + 10, 'rgba(0,0,0,0.28)'],
+      [3, `${glowCss}0.14)`],
+    ] as const) {
+      g.strokeStyle = style;
+      g.lineWidth = w;
+      for (const path of world.layout.paths) {
+        g.beginPath();
+        let first = true;
+        for (const [x, y] of path.points(6)) {
+          if (first) g.moveTo(x, y);
+          else g.lineTo(x, y);
+          first = false;
+        }
+        g.stroke();
       }
-      g.stroke();
     }
 
     const layout = world.layout;
-    if (layout.fenceY !== null) this.drawMembrane(g, layout.fenceY);
-    else this.drawRing(g, layout.hero.x, layout.hero.y, layout.goalRadius);
+    if (layout.fenceY !== null) this.drawMembrane(g, layout.fenceY, glowCss);
+    else this.drawRing(g, layout.hero.x, layout.hero.y, layout.goalRadius, glowCss);
 
-    // Microscope vignette.
-    g.setTransform(1, 0, 0, 1, 0, 0);
-    const vg = g.createRadialGradient(c.width / 2, c.height / 2, Math.min(c.width, c.height) * 0.3, c.width / 2, c.height / 2, Math.max(c.width, c.height) * 0.75);
-    vg.addColorStop(0, 'rgba(0,0,0,0)');
-    vg.addColorStop(1, 'rgba(0,0,0,0.5)');
-    g.fillStyle = vg;
-    g.fillRect(0, 0, c.width, c.height);
+    if (this.mode === '2d') {
+      g.setTransform(1, 0, 0, 1, 0, 0);
+      const vg = g.createRadialGradient(c.width / 2, c.height / 2, Math.min(c.width, c.height) * 0.3, c.width / 2, c.height / 2, Math.max(c.width, c.height) * 0.75);
+      vg.addColorStop(0, 'rgba(0,0,0,0)');
+      vg.addColorStop(1, 'rgba(0,0,0,0.5)');
+      g.fillStyle = vg;
+      g.fillRect(0, 0, c.width, c.height);
+    }
     this.backdropFor = world;
+    this.staticVersion++;
   }
 
-  /** The defence line: a lipid bilayer you are not letting them cross. */
-  private drawMembrane(g: CanvasRenderingContext2D, y: number): void {
-    g.fillStyle = 'rgba(255,255,255,0.08)';
-    g.fillRect(-200, y - 2, FIELD_W + 400, 16);
+  /** The defence line: a glowing lipid bilayer. */
+  private drawMembrane(g: CanvasRenderingContext2D, y: number, glowCss: string): void {
+    const grad = g.createLinearGradient(0, y - 16, 0, y + 26);
+    grad.addColorStop(0, `${glowCss}0)`);
+    grad.addColorStop(0.5, `${glowCss}0.22)`);
+    grad.addColorStop(1, `${glowCss}0)`);
+    g.fillStyle = grad;
+    g.fillRect(-300, y - 16, FIELD_W + 600, 42);
     for (const row of [0, 12]) {
-      for (let x = -200; x < FIELD_W + 200; x += 10) {
-        g.fillStyle = 'rgba(255,214,226,0.55)';
+      for (let x = -300; x < FIELD_W + 300; x += 10) {
+        g.fillStyle = row ? 'rgba(255,214,226,0.4)' : 'rgba(255,236,242,0.65)';
         g.beginPath();
         g.arc(x + (row ? 5 : 0), y + row, 4, 0, Math.PI * 2);
         g.fill();
@@ -212,9 +269,14 @@ export class Renderer {
     }
   }
 
-  private drawRing(g: CanvasRenderingContext2D, x: number, y: number, r: number): void {
-    g.strokeStyle = 'rgba(255,214,226,0.45)';
-    g.lineWidth = 5;
+  private drawRing(g: CanvasRenderingContext2D, x: number, y: number, r: number, glowCss: string): void {
+    g.strokeStyle = `${glowCss}0.35)`;
+    g.lineWidth = 14;
+    g.beginPath();
+    g.arc(x, y, r + 6, 0, Math.PI * 2);
+    g.stroke();
+    g.strokeStyle = 'rgba(255,224,236,0.7)';
+    g.lineWidth = 4;
     g.setLineDash([2, 9]);
     g.beginPath();
     g.arc(x, y, r + 6, 0, Math.PI * 2);
@@ -224,25 +286,43 @@ export class Renderer {
 
   // ---------------------------------------------------------------- drawing
 
-  private drawDanger(world: World): void {
-    const d = world.danger;
-    if (d < 0.75) return;
+  private drawDecals(world: World): void {
     const ctx = this.ctx;
-    const pulse = 0.5 + 0.5 * Math.sin(world.time * 10);
-    const a = Math.min(1, (d - 0.75) / 0.2) * (0.25 + 0.35 * pulse);
-    ctx.fillStyle = `rgba(255,40,70,${a.toFixed(3)})`;
-    const layout = world.layout;
-    if (layout.fenceY !== null) {
-      ctx.fillRect(-200, layout.fenceY - 4, FIELD_W + 400, 20);
-    } else {
-      ctx.beginPath();
-      ctx.arc(layout.hero.x, layout.hero.y, layout.goalRadius + 10, 0, Math.PI * 2);
-      ctx.fill();
+    const sp = this.sprites!;
+    const [r, g, b] = PALETTES[world.stage.theme].stain.glow;
+    const residue = `rgb(${Math.round(r * 255)},${Math.round(g * 255)},${Math.round(b * 255)})`;
+    for (const d of world.fx.decals) {
+      ctx.globalAlpha = (d.life / d.max) * 0.5;
+      ctx.save();
+      ctx.translate(d.x, d.y);
+      ctx.rotate(d.rot);
+      drawSprite(ctx, sp.splat, 0, 0, d.r / 34);
+      ctx.restore();
     }
+    // the burst leaves a faint fluorescent residue that fades with the stain
+    beginGlow(ctx);
+    for (const d of world.fx.decals) glow(ctx, d.x, d.y, d.r * 1.5, residue, (d.life / d.max) * 0.3);
+    endGlow(ctx);
+    ctx.globalAlpha = 1;
   }
 
-  private drawChain(world: World): void {
-    for (const chain of world.chains) this.drawTrain(world, chain);
+  private drawDanger(world: World): void {
+    const d = world.danger;
+    if (d < 0.7) return;
+    const ctx = this.ctx;
+    const pulse = 0.5 + 0.5 * Math.sin(world.time * 10);
+    const a = Math.min(1, (d - 0.7) / 0.22) * (0.3 + 0.4 * pulse);
+    const layout = world.layout;
+    beginGlow(ctx);
+    if (layout.fenceY !== null) {
+      for (let x = 0; x <= FIELD_W; x += 60) glow(ctx, x, layout.fenceY + 6, 70, '#ff2a4a', a * 0.7);
+    } else {
+      for (let i = 0; i < 10; i++) {
+        const ang = (i / 10) * Math.PI * 2;
+        glow(ctx, layout.hero.x + Math.cos(ang) * (layout.goalRadius + 8), layout.hero.y + Math.sin(ang) * (layout.goalRadius + 8), 50, '#ff2a4a', a * 0.7);
+      }
+    }
+    endGlow(ctx);
   }
 
   private drawTrain(world: World, chain: Chain): void {
@@ -251,15 +331,20 @@ export class Renderer {
     const path = chain.path;
     const segs = chain.segs;
     const tmp = this.tmp;
+    const t = world.time;
     this.drawSilhouette(chain);
-    // Tail first so the front of the train draws on top.
+    // Tail first so the front of the train draws on top. Rings ripple in a travelling wave.
     for (let i = segs.length - 1; i >= 0; i--) {
       const seg = segs[i];
       if (!seg.visible) continue;
       for (let r = 0; r < RING_OFFSETS.length; r++) {
-        path.pos(seg.s + RING_OFFSETS[r], tmp);
-        drawSprite(ctx, (seg.index + r) % 2 === 0 ? sp.ringA : sp.ringB, tmp.x, tmp.y + 2);
+        const s = seg.s + RING_OFFSETS[r];
+        path.pos(s, tmp);
+        const wave = Math.sin(t * 5 - s * 0.045) * 2.2;
+        drawSprite(ctx, (seg.index + r) % 2 === 0 ? sp.ringA : sp.ringB, tmp.x - Math.sin(tmp.a) * wave, tmp.y + 2 + Math.cos(tmp.a) * wave);
       }
+      const health = seg.hp / seg.maxHp;
+      if (health < 0.66) drawSprite(ctx, health < 0.33 ? sp.crack2 : sp.crack1, seg.x, seg.y + 2);
       if (seg.flash > 0) {
         ctx.globalAlpha = Math.min(1, seg.flash / 0.07) * 0.75;
         for (let r = 1; r < RING_OFFSETS.length - 1; r++) {
@@ -276,7 +361,16 @@ export class Renderer {
       ctx.lineWidth = SEG_RADIUS * 2;
       this.strokeGroups(chain, 2);
     }
-    // Chests and HP labels on top of the body.
+    // Chest and power-up halos.
+    beginGlow(ctx);
+    for (const seg of segs) {
+      if (!seg.visible) continue;
+      if (seg.kind === 'elite') glow(ctx, seg.x, seg.y - 6, 54 + Math.sin(t * 5 + seg.id) * 6, '#ffc93c', 0.75);
+      else if (seg.kind === 'chest') glow(ctx, seg.x, seg.y - 6, 44, '#38e8d2', 0.55);
+      if (seg.power) glow(ctx, seg.x, seg.y, 56 + Math.sin(t * 8 + seg.id) * 6, POWER_STYLE[seg.power].color, 0.75);
+    }
+    endGlow(ctx);
+    // Chests, power-ups and HP labels on top of the body.
     ctx.font = LABEL_FONT;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
@@ -284,22 +378,20 @@ export class Renderer {
     for (let i = segs.length - 1; i >= 0; i--) {
       const seg = segs[i];
       if (!seg.visible) continue;
-      if (seg.kind !== 'normal') this.drawChest(seg, world.time);
-      if (seg.power) this.drawPower(seg, world.time);
-      const label = hpLabel(seg);
+      if (seg.kind !== 'normal') this.drawChest(seg, t);
+      if (seg.power) this.drawPower(seg, t);
+      const label = fmt(Math.max(1, Math.ceil(seg.hp)));
+      const ly = seg.y + (seg.kind === 'normal' ? 1 : 9);
       ctx.lineWidth = 4;
       ctx.strokeStyle = INK;
-      ctx.strokeText(label, seg.x, seg.y + (seg.kind === 'normal' ? 1 : 9));
+      ctx.strokeText(label, seg.x, ly);
       ctx.fillStyle = '#ffffff';
-      ctx.fillText(label, seg.x, seg.y + (seg.kind === 'normal' ? 1 : 9));
+      ctx.fillText(label, seg.x, ly);
     }
     this.drawHead(world, chain);
   }
 
-  /**
-   * One ink outline (plus a drop shadow) around the whole train, stroked as
-   * a fat path along the track rather than hundreds of sprites.
-   */
+  /** One ink outline (plus a drop shadow) around the train, stroked as a fat path. */
   private drawSilhouette(chain: Chain): void {
     const ctx = this.ctx;
     const segs = chain.segs;
@@ -323,13 +415,11 @@ export class Renderer {
     }
     if (!Number.isNaN(start)) groups.push(start, end);
     if (!groups.length) return;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.strokeStyle = 'rgba(0,0,0,0.22)';
-    ctx.lineWidth = SEG_RADIUS * 2 + 4;
-    this.strokeGroups(chain, 8);
+    ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+    ctx.lineWidth = SEG_RADIUS * 2 + 6;
+    this.strokeGroups(chain, 10);
     ctx.strokeStyle = INK;
-    ctx.lineWidth = SEG_RADIUS * 2 + 5.2;
+    ctx.lineWidth = SEG_RADIUS * 2 + 7;
     this.strokeGroups(chain, 2);
   }
 
@@ -358,24 +448,107 @@ export class Renderer {
     ctx.stroke();
   }
 
-  /** A lit power-up: coloured halo, its icon, and a ring that runs down as it fades. */
+  private drawChest(seg: Segment, time: number): void {
+    const sp = this.sprites!;
+    const bob = Math.sin(time * 4 + seg.id) * 1.5;
+    drawSprite(this.ctx, seg.kind === 'elite' ? sp.elite : sp.chest, seg.x, seg.y - 4 + bob, 0.95);
+  }
+
+  /** A lit power-up: its icon and a ring that runs down as it fades. */
   private drawPower(seg: Segment, time: number): void {
     const ctx = this.ctx;
     const style = POWER_STYLE[seg.power!];
-    const pulse = 0.75 + 0.25 * Math.sin(time * 9 + seg.id);
     const blink = seg.powerLife < 3 && Math.sin(time * 18) < 0;
-    ctx.globalAlpha = 0.45 * pulse;
-    ctx.fillStyle = style.color;
-    ctx.beginPath();
-    ctx.arc(seg.x, seg.y, SEG_RADIUS + 10, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.globalAlpha = 1;
     ctx.strokeStyle = style.color;
     ctx.lineWidth = 4;
     ctx.beginPath();
     ctx.arc(seg.x, seg.y, SEG_RADIUS + 8, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * (seg.powerLife / 12));
     ctx.stroke();
-    if (!blink) ctx.drawImage(iconCanvas(style.icon, 64), seg.x - 17, seg.y - 50, 34, 34);
+    if (!blink) {
+      const bob = Math.sin(time * 6 + seg.id) * 3;
+      ctx.drawImage(iconCanvas(style.icon, 64), seg.x - 18, seg.y - 54 + bob, 36, 36);
+    }
+  }
+
+  /** The virus head: body sprite plus a live face that tracks you, blinks and chomps. */
+  private drawHead(world: World, chain: Chain): void {
+    if (!chain.segs.length) return;
+    const h = chain.head;
+    if (h.y < -60 || h.x < -60 || h.x > FIELD_W + 60) return;
+    const ctx = this.ctx;
+    const t = world.time + chain.lane * 1.7;
+    const danger = chain.danger;
+    const p = PALETTES[world.stage.theme];
+    if (danger > 0.72) {
+      beginGlow(ctx);
+      glow(ctx, h.x, h.y, 80 + Math.sin(t * 12) * 10, '#ff2a4a', Math.min(1, (danger - 0.72) * 4) * 0.8);
+      endGlow(ctx);
+    }
+    const flip = Math.cos(h.a) < -0.1 ? -1 : 1;
+    const squash = 1 + Math.sin(t * 6) * 0.03 + (chain.retracting ? 0.08 : 0);
+    ctx.save();
+    ctx.translate(h.x, h.y);
+    ctx.rotate(Math.sin(t * 2.3) * 0.06);
+    ctx.scale(flip * squash, 2 - squash);
+    drawSprite(ctx, this.sprites!.head, 0, 0);
+    // face (drawn facing right; the flip handles left)
+    const fx = 7;
+    const blink = t % 3.7 < 0.13;
+    const hx = (world.hero.x - h.x) * flip;
+    const hy = world.hero.y - h.y;
+    const hl = Math.hypot(hx, hy) || 1;
+    const lookX = (hx / hl) * 3;
+    const lookY = (hy / hl) * 3;
+    ctx.fillStyle = '#ffffff';
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 2.5;
+    for (const ex of [-11, 11]) {
+      ctx.beginPath();
+      ctx.ellipse(fx + ex, -6, 8, blink ? 1.5 : 9.5, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      if (!blink) {
+        ctx.fillStyle = INK;
+        ctx.beginPath();
+        ctx.arc(fx + ex + lookX, -5 + lookY, 4.2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#ffffff';
+      }
+    }
+    ctx.lineWidth = 4.5;
+    ctx.beginPath();
+    ctx.moveTo(fx - 20, -20 - danger * 3);
+    ctx.lineTo(fx - 5, -14);
+    ctx.moveTo(fx + 20, -20 - danger * 3);
+    ctx.lineTo(fx + 5, -14);
+    ctx.stroke();
+    // chomping mouth, faster as it closes in
+    const chomp = (Math.sin(t * (6 + danger * 12)) + 1) / 2;
+    const mh = 6 + chomp * 9;
+    ctx.fillStyle = '#3a0d18';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.roundRect(fx - 12, 9, 24, mh, 6);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.moveTo(fx - 8, 10);
+    ctx.lineTo(fx - 4, 10);
+    ctx.lineTo(fx - 6, 10 + Math.min(6, mh - 2));
+    ctx.closePath();
+    ctx.moveTo(fx + 4, 10);
+    ctx.lineTo(fx + 8, 10);
+    ctx.lineTo(fx + 6, 10 + Math.min(6, mh - 2));
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+    // eyes glow faintly in the stain colour
+    beginGlow(ctx);
+    const [r, g, b] = p.stain.glow;
+    const eyeGlow = `rgb(${Math.round(r * 255)},${Math.round(g * 255)},${Math.round(b * 255)})`;
+    for (const ex of [-11, 11]) glow(ctx, h.x + (fx + ex) * flip, h.y - 6, 16, eyeGlow, 0.35);
+    endGlow(ctx);
   }
 
   /** Manual aim: crosshair on the finger or the locked segment. */
@@ -385,6 +558,9 @@ export class Renderer {
     if (!p) return;
     const ctx = this.ctx;
     const r = 26 + Math.sin(world.time * 8) * 3;
+    beginGlow(ctx);
+    glow(ctx, p.x, p.y, 48, '#ff5b6e', 0.4);
+    endGlow(ctx);
     ctx.save();
     ctx.translate(p.x, p.y);
     ctx.rotate(world.time * 1.5);
@@ -404,400 +580,30 @@ export class Renderer {
     ctx.restore();
   }
 
-  private drawEffects(world: World): void {
-    const ctx = this.ctx;
-    for (const e of world.effects) {
-      if (e.kind === 'laser') {
-        const x = e.a;
-        const fade = Math.min(1, (e.dur - e.t) / 0.3, e.t / 0.15);
-        ctx.globalAlpha = 0.35 * fade;
-        ctx.fillStyle = '#ff5bd1';
-        ctx.fillRect(x - 46, -200, 92, FIELD_H + 400);
-        ctx.globalAlpha = 0.85 * fade;
-        ctx.fillStyle = '#ffd6f4';
-        ctx.fillRect(x - 14, -200, 28, FIELD_H + 400);
-        ctx.globalAlpha = fade;
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(x - 4, -200, 8, FIELD_H + 400);
-        ctx.globalAlpha = 1;
-      }
-    }
-  }
-
-  private drawChest(seg: Segment, time: number): void {
-    const sp = this.sprites!;
-    const bob = Math.sin(time * 4 + seg.id) * 1.5;
-    drawSprite(this.ctx, seg.kind === 'elite' ? sp.elite : sp.chest, seg.x, seg.y - 4 + bob, 0.95);
-  }
-
-  private drawHead(world: World, chain: Chain): void {
-    if (!chain.segs.length) return;
-    const h = chain.head;
-    if (h.y < -60 || h.x < -60 || h.x > FIELD_W + 60) return;
-    const ctx = this.ctx;
-    const squash = 1 + Math.sin(world.time * 6) * 0.03;
-    ctx.save();
-    ctx.translate(h.x, h.y);
-    if (Math.cos(h.a) < -0.1) ctx.scale(-1, 1);
-    ctx.scale(squash, 2 - squash);
-    drawSprite(ctx, this.sprites!.head, 0, 0);
-    ctx.restore();
-  }
-
-  private drawZone(z: Zone, time: number): void {
-    const ctx = this.ctx;
-    const fade = Math.min(1, z.life / 0.4, (z.maxLife - z.life) / 0.2 + 0.2);
-    ctx.globalAlpha = fade;
-    switch (z.kind) {
-      case 'swab': {
-        ctx.save();
-        ctx.translate(z.x, z.y);
-        ctx.fillStyle = 'rgba(255,140,40,0.16)';
-        ctx.beginPath();
-        ctx.arc(0, 0, z.r, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.rotate(z.rot);
-        ctx.lineCap = 'round';
-        ctx.strokeStyle = '#ff7a2e';
-        ctx.lineWidth = 7;
-        ctx.beginPath();
-        ctx.arc(0, 0, z.r * 0.82, 0, Math.PI * 1.2);
-        ctx.stroke();
-        ctx.strokeStyle = '#ffd34d';
-        ctx.lineWidth = 3;
-        ctx.stroke();
-        // the swab itself, spinning
-        ctx.strokeStyle = INK;
-        ctx.lineWidth = 6;
-        ctx.beginPath();
-        ctx.moveTo(-z.r * 0.8, 0);
-        ctx.lineTo(z.r * 0.8, 0);
-        ctx.stroke();
-        ctx.strokeStyle = '#f4efe6';
-        ctx.lineWidth = 3;
-        ctx.stroke();
-        ctx.fillStyle = '#ffb347';
-        for (const sx of [-1, 1]) {
-          ctx.beginPath();
-          ctx.arc(sx * z.r * 0.8, 0, 7, 0, Math.PI * 2);
-          ctx.fill();
-        }
-        ctx.restore();
-        break;
-      }
-      case 'puddle': {
-        ctx.fillStyle = 'rgba(120,220,255,0.28)';
-        ctx.strokeStyle = 'rgba(190,245,255,0.6)';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.ellipse(z.x, z.y, z.r, z.r * 0.8, 0, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-        const ripple = ((time * 1.5) % 1) * z.r;
-        ctx.beginPath();
-        ctx.ellipse(z.x, z.y, ripple, ripple * 0.8, 0, 0, Math.PI * 2);
-        ctx.stroke();
-        break;
-      }
-      case 'fire': {
-        const flick = 0.85 + Math.sin(time * 30 + z.x) * 0.15;
-        ctx.fillStyle = 'rgba(255,120,40,0.3)';
-        ctx.beginPath();
-        ctx.arc(z.x, z.y, z.r * flick, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = 'rgba(255,210,80,0.35)';
-        ctx.beginPath();
-        ctx.arc(z.x, z.y, z.r * 0.5 * flick, 0, Math.PI * 2);
-        ctx.fill();
-        break;
-      }
-      case 'tower': {
-        ctx.fillStyle = '#f4f7ff';
-        ctx.strokeStyle = INK;
-        ctx.lineWidth = 2.5;
-        ctx.beginPath();
-        ctx.roundRect(z.x - 11, z.y - 12, 22, 24, 5);
-        ctx.fill();
-        ctx.stroke();
-        ctx.fillStyle = '#3fd27a';
-        ctx.fillRect(z.x - 3, z.y - 8, 6, 16);
-        ctx.fillRect(z.x - 8, z.y - 3, 16, 6);
-        break;
-      }
-    }
-    ctx.globalAlpha = 1;
-  }
-
-  private drawLasers(world: World): void {
-    const towers = world.zones.filter((z) => z.kind === 'tower');
-    if (towers.length < 2) return;
-    const ctx = this.ctx;
-    ctx.lineCap = 'round';
-    const flick = 0.7 + Math.random() * 0.3;
-    for (let i = 0; i < towers.length; i++) {
-      for (let j = i + 1; j < towers.length; j++) {
-        const a = towers[i];
-        const b = towers[j];
-        if (a.group !== b.group) continue;
-        ctx.strokeStyle = `rgba(109,255,154,${(0.25 * flick).toFixed(3)})`;
-        ctx.lineWidth = 10;
-        ctx.beginPath();
-        ctx.moveTo(a.x, a.y);
-        ctx.lineTo(b.x, b.y);
-        ctx.stroke();
-        ctx.strokeStyle = '#d9ffe6';
-        ctx.lineWidth = 2.5;
-        ctx.stroke();
-      }
-    }
-  }
-
-  private drawProjectile(p: Projectile, time: number): void {
-    const ctx = this.ctx;
-    switch (p.kind) {
-      case 'capsule': {
-        ctx.save();
-        ctx.translate(p.x, p.y);
-        ctx.rotate(Math.atan2(p.vy, p.vx));
-        const len = p.child ? 13 : 17;
-        const wid = p.child ? 6 : 8;
-        ctx.fillStyle = '#7cc8ff';
-        ctx.beginPath();
-        ctx.roundRect(-len / 2, -wid / 2, len, wid, wid / 2);
-        ctx.fill();
-        ctx.fillStyle = '#ffffff';
-        ctx.beginPath();
-        ctx.roundRect(0, -wid / 2, len / 2, wid, [0, wid / 2, wid / 2, 0]);
-        ctx.fill();
-        ctx.strokeStyle = INK;
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.roundRect(-len / 2, -wid / 2, len, wid, wid / 2);
-        ctx.stroke();
-        ctx.restore();
-        break;
-      }
-      case 'needle': {
-        const sp = Math.hypot(p.vx, p.vy) || 1;
-        const tx = p.x - (p.vx / sp) * 26;
-        const ty = p.y - (p.vy / sp) * 26;
-        ctx.lineCap = 'round';
-        ctx.strokeStyle = 'rgba(255,211,77,0.35)';
-        ctx.lineWidth = 7;
-        ctx.beginPath();
-        ctx.moveTo(tx, ty);
-        ctx.lineTo(p.x, p.y);
-        ctx.stroke();
-        ctx.strokeStyle = '#ffe9a0';
-        ctx.lineWidth = 2.5;
-        ctx.stroke();
-        break;
-      }
-      case 'bubble': {
-        ctx.fillStyle = 'rgba(143,232,255,0.55)';
-        ctx.strokeStyle = '#d8faff';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-        ctx.fillStyle = 'rgba(255,255,255,0.85)';
-        ctx.beginPath();
-        ctx.arc(p.x - p.r * 0.35, p.y - p.r * 0.35, p.r * 0.28, 0, Math.PI * 2);
-        ctx.fill();
-        break;
-      }
-      case 'snot': {
-        const sp = Math.hypot(p.vx, p.vy) || 1;
-        ctx.fillStyle = 'rgba(155,224,79,0.45)';
-        for (let i = 3; i >= 1; i--) {
-          ctx.beginPath();
-          ctx.arc(p.x - (p.vx / sp) * i * 9, p.y - (p.vy / sp) * i * 9, p.r * (1 - i * 0.2), 0, Math.PI * 2);
-          ctx.fill();
-        }
-        const wob = 1 + Math.sin(time * 14 + p.x) * 0.08;
-        ctx.fillStyle = '#9be04f';
-        ctx.strokeStyle = '#2f5a12';
-        ctx.lineWidth = 2.5;
-        ctx.beginPath();
-        ctx.ellipse(p.x, p.y, p.r * wob, p.r / wob, p.rot, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-        ctx.fillStyle = 'rgba(255,255,255,0.7)';
-        ctx.beginPath();
-        ctx.arc(p.x - p.r * 0.3, p.y - p.r * 0.3, p.r * 0.25, 0, Math.PI * 2);
-        ctx.fill();
-        break;
-      }
-      case 'swab': {
-        ctx.save();
-        ctx.translate(p.x, p.y);
-        ctx.rotate(p.rot);
-        ctx.strokeStyle = INK;
-        ctx.lineWidth = 6;
-        ctx.lineCap = 'round';
-        ctx.beginPath();
-        ctx.moveTo(-18, 0);
-        ctx.lineTo(18, 0);
-        ctx.stroke();
-        ctx.strokeStyle = '#f4efe6';
-        ctx.lineWidth = 3;
-        ctx.stroke();
-        ctx.fillStyle = '#ff9a3c';
-        for (const sx of [-18, 18]) {
-          ctx.beginPath();
-          ctx.arc(sx, 0, 7, 0, Math.PI * 2);
-          ctx.fill();
-        }
-        ctx.restore();
-        break;
-      }
-      case 'scalpel': {
-        ctx.save();
-        ctx.translate(p.x, p.y);
-        ctx.rotate(p.rot);
-        const s = p.r / 15;
-        ctx.scale(s, s);
-        ctx.fillStyle = 'rgba(220,235,255,0.25)';
-        ctx.beginPath();
-        ctx.arc(0, 0, 20, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = '#e8eef6';
-        ctx.strokeStyle = INK;
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(-4, -3);
-        ctx.lineTo(10, -6);
-        ctx.quadraticCurveTo(20, -2, 18, 4);
-        ctx.lineTo(-4, 4);
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
-        ctx.fillStyle = '#5b6377';
-        ctx.beginPath();
-        ctx.roundRect(-20, -3, 17, 7, 3);
-        ctx.fill();
-        ctx.stroke();
-        ctx.restore();
-        break;
-      }
-      case 'meteor': {
-        const tx = p.tx ?? p.x;
-        const ty = p.ty ?? p.y;
-        const d = Math.hypot(tx - p.x, ty - p.y) || 1;
-        const ux = (p.x - tx) / d;
-        const uy = (p.y - ty) / d;
-        ctx.lineCap = 'round';
-        ctx.strokeStyle = 'rgba(255,122,46,0.45)';
-        ctx.lineWidth = 16;
-        ctx.beginPath();
-        ctx.moveTo(p.x, p.y);
-        ctx.lineTo(p.x + ux * 70, p.y + uy * 70);
-        ctx.stroke();
-        ctx.strokeStyle = 'rgba(255,211,77,0.8)';
-        ctx.lineWidth = 6;
-        ctx.stroke();
-        ctx.fillStyle = '#ffb347';
-        ctx.strokeStyle = INK;
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-        // target marker
-        ctx.strokeStyle = 'rgba(255,190,80,0.6)';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.arc(tx, ty, 18 + Math.sin(time * 20) * 3, 0, Math.PI * 2);
-        ctx.stroke();
-        break;
-      }
-      case 'syringe': {
-        ctx.save();
-        ctx.translate(p.x, p.y);
-        ctx.rotate(p.rot);
-        ctx.strokeStyle = INK;
-        ctx.lineWidth = 2;
-        ctx.fillStyle = '#9fd8ff';
-        ctx.beginPath();
-        ctx.roundRect(-16, -5, 22, 10, 3);
-        ctx.fill();
-        ctx.stroke();
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(-21, -3, 5, 6);
-        ctx.beginPath();
-        ctx.moveTo(6, 0);
-        ctx.lineTo(18, 0);
-        ctx.stroke();
-        ctx.restore();
-        break;
-      }
-      case 'cannon': {
-        ctx.fillStyle = '#2b2440';
-        ctx.strokeStyle = INK;
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-        ctx.fillStyle = 'rgba(255,255,255,0.55)';
-        ctx.beginPath();
-        ctx.arc(p.x - p.r * 0.35, p.y - p.r * 0.35, p.r * 0.3, 0, Math.PI * 2);
-        ctx.fill();
-        break;
-      }
-      case 'roller': {
-        ctx.save();
-        ctx.translate(p.x, p.y);
-        const h = p.r;
-        ctx.fillStyle = '#b77cff';
-        ctx.strokeStyle = INK;
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.roundRect(-15, -h, 30, h * 2, 12);
-        ctx.fill();
-        ctx.stroke();
-        ctx.fillStyle = '#e6d2ff';
-        const off = (p.rot * 10) % 12;
-        for (let y = -h + 6 + off; y < h - 4; y += 12) {
-          ctx.beginPath();
-          ctx.arc(0, y, 3.5, 0, Math.PI * 2);
-          ctx.fill();
-        }
-        ctx.restore();
-        break;
-      }
-    }
-  }
-
-  private drawClouds(world: World): void {
-    const ctx = this.ctx;
-    for (const c of world.clouds) {
-      ctx.fillStyle = 'rgba(30,30,60,0.25)';
-      ctx.beginPath();
-      ctx.ellipse(c.x, c.y + 26, 30, 7, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = '#c9d6ea';
-      ctx.strokeStyle = INK;
-      ctx.lineWidth = 2.5;
-      ctx.beginPath();
-      ctx.arc(c.x - 14, c.y + 2, 12, 0, Math.PI * 2);
-      ctx.arc(c.x + 2, c.y - 6, 15, 0, Math.PI * 2);
-      ctx.arc(c.x + 16, c.y + 3, 11, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = '#9aa8c4';
-      ctx.beginPath();
-      ctx.roundRect(c.x - 26, c.y + 2, 52, 12, 6);
-      ctx.fill();
-    }
-  }
-
   private drawHero(world: World): void {
     const ctx = this.ctx;
     const h = world.hero;
     const costume = world.costume.id;
     const sprite = this.hero(costume);
-    const bob = Math.sin(world.time * 5) * 1.5;
+    const t = world.time;
+    const bob = Math.sin(t * 5) * 1.5;
+    const [heartDark] = world.costume.heart;
+    // movement afterimages
+    const moved = h.x - this.lastHeroX;
+    this.lastHeroX = h.x;
+    this.heroTrail.unshift(h.x);
+    if (this.heroTrail.length > 6) this.heroTrail.length = 6;
+    if (Math.abs(moved) > 2) {
+      for (let i = 2; i < this.heroTrail.length; i += 2) {
+        ctx.globalAlpha = 0.18 * (1 - i / 6);
+        drawSprite(ctx, sprite, this.heroTrail[i], h.y + bob);
+      }
+      ctx.globalAlpha = 1;
+    }
+    beginGlow(ctx);
+    glow(ctx, h.x, h.y + bob, 70, heartDark, 0.35 + 0.1 * Math.sin(t * 3));
+    if (world.rapid > 0) glow(ctx, h.x, h.y + bob, 90, '#7cc8ff', 0.5 + 0.2 * Math.sin(t * 20));
+    endGlow(ctx);
     // Shadow clones (ninja ultimate) flank the hero, translucent.
     for (const e of world.effects) {
       if (e.kind !== 'clones') continue;
@@ -805,24 +611,19 @@ export class Renderer {
       ctx.globalAlpha = 0.45 * fade;
       for (const side of [-1, 1]) {
         const cx = Math.min(FIELD_W - 20, Math.max(20, h.x + side * 78));
-        drawSprite(ctx, sprite, cx, h.y + 6 + Math.sin(world.time * 5 + side) * 1.5);
+        drawSprite(ctx, sprite, cx, h.y + 6 + Math.sin(t * 5 + side) * 1.5);
       }
-      ctx.globalAlpha = 1;
-    }
-    if (world.rapid > 0) {
-      // rapid-fire aura
-      ctx.globalAlpha = 0.25 + 0.15 * Math.sin(world.time * 20);
-      ctx.fillStyle = '#9fd8ff';
-      ctx.beginPath();
-      ctx.arc(h.x, h.y + bob, 40, 0, Math.PI * 2);
-      ctx.fill();
       ctx.globalAlpha = 1;
     }
     const kick = h.recoil * 4;
     const x = h.x - Math.cos(h.aim) * kick;
     const y = h.y + bob - Math.sin(h.aim) * kick;
-    drawSprite(ctx, sprite, x, y);
-    // pupils follow the aim (the pirate's right eye is under the patch)
+    // squash on recoil
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.scale(1 + h.recoil * 0.06, 1 - h.recoil * 0.07);
+    drawSprite(ctx, sprite, 0, 0);
+    ctx.restore();
     ctx.fillStyle = INK;
     const px = Math.cos(h.aim) * 3;
     const py = Math.sin(h.aim) * 3;
@@ -850,44 +651,78 @@ export class Renderer {
     ctx.lineWidth = 2;
     ctx.stroke();
     ctx.restore();
+    if (h.recoil > 0.55) {
+      // muzzle flash at the syringe tip
+      beginGlow(ctx);
+      glow(ctx, x + 18 + Math.cos(h.aim) * 34, y + 4 + Math.sin(h.aim) * 34, 18 + h.recoil * 10, '#bff3ff', h.recoil);
+      endGlow(ctx);
+    }
   }
 
   private drawFx(world: World): void {
     const ctx = this.ctx;
     const fx = world.fx;
-    for (const p of fx.particles) {
-      const t = p.life / p.max;
-      ctx.globalAlpha = p.dust ? t * 0.6 : Math.min(1, t * 1.5);
-      ctx.fillStyle = p.color;
+    // stuck needles
+    ctx.lineCap = 'round';
+    for (const p of fx.pins) {
+      ctx.globalAlpha = Math.min(1, p.life / 0.2);
+      ctx.strokeStyle = '#ffe9a0';
+      ctx.lineWidth = 2.5;
       ctx.beginPath();
-      ctx.arc(p.x, p.y, p.dust ? p.size * (1.6 - t * 0.6) : p.size * t, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    ctx.globalAlpha = 1;
-    for (const r of fx.rings) {
-      const t = 1 - r.life / r.max;
-      ctx.globalAlpha = 1 - t;
-      ctx.strokeStyle = r.color;
-      ctx.lineWidth = 4 * (1 - t) + 1;
-      ctx.beginPath();
-      ctx.arc(r.x, r.y, r.r * (0.35 + 0.65 * t), 0, Math.PI * 2);
+      ctx.moveTo(p.x, p.y);
+      ctx.lineTo(p.x - Math.cos(p.a) * 16, p.y - Math.sin(p.a) * 16);
       ctx.stroke();
     }
     ctx.globalAlpha = 1;
-    ctx.lineJoin = 'round';
-    for (const b of fx.bolts) {
-      ctx.globalAlpha = b.life / b.max;
-      for (const [w, c] of [
-        [7, 'rgba(140,190,255,0.5)'],
-        [2.5, '#ffffff'],
-      ] as const) {
-        ctx.strokeStyle = c;
-        ctx.lineWidth = w;
-        ctx.beginPath();
-        ctx.moveTo(b.pts[0], b.pts[1]);
-        for (let i = 2; i < b.pts.length; i += 2) ctx.lineTo(b.pts[i], b.pts[i + 1]);
-        ctx.stroke();
+    // particles: dust normal, sparks additive
+    for (const p of fx.particles) {
+      if (!p.dust) continue;
+      const t = p.life / p.max;
+      ctx.globalAlpha = t * 0.6;
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size * (1.6 - t * 0.6), 0, Math.PI * 2);
+      ctx.fill();
+    }
+    beginGlow(ctx);
+    for (const p of fx.particles) {
+      if (p.dust) continue;
+      const t = p.life / p.max;
+      glow(ctx, p.x, p.y, p.size * 2.6 * t + 2, p.color, Math.min(1, t * 1.5));
+    }
+    const light = glowCtx(ctx);
+    for (const r of fx.rings) {
+      const t = 1 - r.life / r.max;
+      for (const g of light === ctx ? [ctx] : [ctx, light]) {
+        g.globalAlpha = (1 - t) * 0.9;
+        g.strokeStyle = r.color;
+        g.lineWidth = (6 * (1 - t) + 1) * (g === light ? 2.5 : 1);
+        g.beginPath();
+        g.arc(r.x, r.y, r.r * (0.35 + 0.65 * t), 0, Math.PI * 2);
+        g.stroke();
       }
+    }
+    endGlow(ctx);
+    ctx.lineJoin = 'round';
+    light.lineJoin = 'round';
+    for (const b of fx.bolts) {
+      const a = b.life / b.max;
+      for (const [w, c, g] of [
+        [12, 'rgba(110,170,255,0.5)', light],
+        [4, 'rgba(190,220,255,0.85)', ctx],
+        [1.6, '#ffffff', ctx],
+      ] as const) {
+        g.globalAlpha = a;
+        g.strokeStyle = c;
+        g.lineWidth = w;
+        g.beginPath();
+        g.moveTo(b.pts[0], b.pts[1]);
+        for (let i = 2; i < b.pts.length; i += 2) g.lineTo(b.pts[i], b.pts[i + 1]);
+        g.stroke();
+      }
+      beginGlow(ctx);
+      glow(ctx, b.pts[b.pts.length - 2], b.pts[b.pts.length - 1], 30, '#9fd0ff', a);
+      endGlow(ctx);
     }
     ctx.globalAlpha = 1;
     if (!this.numbers) return;
@@ -895,18 +730,21 @@ export class Renderer {
     ctx.textBaseline = 'middle';
     for (const n of fx.numbers) {
       const t = n.life / n.max;
+      const age = n.max - n.life;
+      // pop in with a little overshoot
+      const pop = age < 0.12 ? 1 + 0.7 * (1 - age / 0.12) : 1;
       ctx.globalAlpha = Math.min(1, t * 2.5);
+      ctx.save();
+      ctx.translate(n.x, n.y);
+      ctx.scale(pop, pop);
       ctx.font = n.crit ? CRIT_FONT : NUM_FONT;
       ctx.lineWidth = n.crit ? 5 : 4;
       ctx.strokeStyle = INK;
-      ctx.strokeText(n.text, n.x, n.y);
-      ctx.fillStyle = n.crit ? '#ff5b4d' : '#ffffff';
-      ctx.fillText(n.text, n.x, n.y);
+      ctx.strokeText(n.text, 0, 0);
+      ctx.fillStyle = n.crit ? n.color : '#ffffff';
+      ctx.fillText(n.text, 0, 0);
+      ctx.restore();
     }
     ctx.globalAlpha = 1;
   }
-}
-
-function hpLabel(seg: Segment): string {
-  return fmt(Math.max(1, Math.ceil(seg.hp)));
 }
