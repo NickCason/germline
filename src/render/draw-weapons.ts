@@ -335,13 +335,35 @@ function drawProjectile(ctx: CanvasRenderingContext2D, p: Projectile, time: numb
       break;
     }
     case 'bubble': {
+      // fizz left along the random path, smallest and faintest at the oldest end
+      const tr = p.trail;
+      if (tr) {
+        ctx.strokeStyle = '#d6f7ff';
+        ctx.lineWidth = 1.2;
+        for (let i = 0; i < tr.length; i += 2) {
+          const k = (i + 2) / tr.length;
+          const wob = Math.sin(time * 9 + i * 1.7) * 3 * (1 - k);
+          ctx.globalAlpha = 0.12 + 0.4 * k;
+          ctx.beginPath();
+          ctx.arc(tr[i] + wob, tr[i + 1], 1.2 + 3 * k, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        ctx.globalAlpha = 1;
+      }
+      // the body wobbles like a real bubble, stretched a little along its drift
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate(Math.atan2(p.vy, p.vx));
+      const wobble = Math.sin(time * 13 + p.x * 0.05) * 0.06;
+      ctx.scale(1.06 + wobble, 0.95 - wobble);
       ctx.fillStyle = 'rgba(143,232,255,0.4)';
       ctx.strokeStyle = '#e4fbff';
       ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+      ctx.arc(0, 0, p.r, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
+      ctx.restore();
       // iridescent rim
       ctx.strokeStyle = `hsla(${(time * 200 + p.x) % 360}, 90%, 75%, 0.7)`;
       ctx.lineWidth = 1.5;

@@ -264,10 +264,49 @@ function bubbleBurst(world: World, p: Projectile): void {
   }
 }
 
+/** How hard bubbles turn toward straight up as they drift (rad/s at most). */
+const BUOYANCY = 0.7;
+
+/** A bubble's own random current: no two drift alike, and none repeats itself. */
+function bubbleWander(world: World): number[] {
+  const rng = world.rng;
+  const sign = rng.next() < 0.5 ? -1 : 1;
+  return [
+    rng.range(1.1, 2.0),
+    rng.range(0, Math.PI * 2),
+    rng.range(2.4, 3.8),
+    rng.range(0, Math.PI * 2),
+    rng.range(4.6, 6.8),
+    rng.range(0, Math.PI * 2),
+    sign * rng.range(2.6, 4.4),
+  ];
+}
+
 const bubbleStep: Step = (world, p, dt) => {
+  // Drift: the heading turns by a smooth mix of waves unique to this bubble,
+  // with a little buoyancy pulling it upward toward the train.
+  const wv = p.wander;
+  if (wv) {
+    const t = p.age;
+    let turn = wv[6] * (0.6 * Math.sin(wv[0] * t + wv[1]) + 0.3 * Math.sin(wv[2] * t + wv[3]) + 0.25 * Math.sin(wv[4] * t + wv[5]));
+    turn += Math.sin(-Math.PI / 2 - Math.atan2(p.vy, p.vx)) * BUOYANCY;
+    const c = Math.cos(turn * dt);
+    const s = Math.sin(turn * dt);
+    const vx = p.vx * c - p.vy * s;
+    p.vy = p.vx * s + p.vy * c;
+    p.vx = vx;
+  }
   p.x += p.vx * dt;
   p.y += p.vy * dt;
   p.life -= dt;
+  // a wake of fizz so the path reads on screen
+  p.t = (p.t ?? 0) + dt;
+  if (p.t >= 0.035) {
+    p.t = 0;
+    const tr = (p.trail ??= []);
+    tr.push(p.x, p.y);
+    if (tr.length > 24) tr.splice(0, 2);
+  }
   if (p.x < p.r) {
     p.x = p.r;
     p.vx = Math.abs(p.vx);
@@ -315,7 +354,7 @@ const bubbleStep: Step = (world, p, dt) => {
 export const bubble: WeaponDef = {
   id: 'bubble',
   name: 'Disinfectant Bubble',
-  blurb: 'Bouncing water balls that ricochet off the train and burst at the end.',
+  blurb: 'Water balls that drift on random currents, ricochet off the train and burst at the end.',
   cooldown: 2.6,
   power: 3,
   qty: 2,
@@ -334,6 +373,7 @@ export const bubble: WeaponDef = {
       world.spawn(
         proj('bubble', w, world.hero.x, world.hero.y - 20, Math.cos(a) * sp, Math.sin(a) * sp, 11, world.weaponDamage(w), 3.2, bubbleStep, {
           phase: 3 + w.stats.bounces,
+          wander: bubbleWander(world),
         }),
       );
     }

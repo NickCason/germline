@@ -148,6 +148,8 @@ export interface Projectile {
   gen?: number;
   /** Capsule already split by a prism. */
   refracted?: boolean;
+  /** Random-current signature for drifting projectiles: three wave frequencies and phases, then strength. */
+  wander?: number[];
 }
 
 export type ZoneKind = 'swab' | 'puddle' | 'fire' | 'tower' | 'well';
